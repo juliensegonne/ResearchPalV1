@@ -6,60 +6,68 @@ from langchain_community.vectorstores import Chroma  #bdd ChromaDB
 from langchain_community.embeddings import SentenceTransformerEmbeddings  #embeddings
 
 
+from tqdm import tqdm
+
 def load_and_chunk(data_dir='data', urls=None):
-    """
-    Charge les fichiers d'un dossier et les URLs, puis les découpe en chunks.
-    """
     documents = []
     date_ingestion = datetime.datetime.now().strftime("%Y-%m-%d")
 
-    # 1. Chargement des fichiers locaux (.pdf, .txt, .md)
-    # DirectoryLoader gère le parcours du dossier
-    # On définit quel loader utiliser pour chaque extension
-    loaders = {
+    # 1. Chargement des fichiers locaux
+    loaders_config = {
         ".pdf": PyPDFLoader,
         ".txt": TextLoader,
         ".md": TextLoader,
     }
     
-    for ext, loader_cls in loaders.items():
+    print("Chargement des fichiers locaux...")
+    for ext, loader_cls in loaders_config.items():
+        # Utilisation de show_progress=True (supporté par DirectoryLoader si tqdm est installé)
         loader = DirectoryLoader(
             data_dir, 
             glob=f"**/*{ext}", 
             loader_cls=loader_cls,
-            silent_errors=True # Évite de crash si un fichier est corrompu
+            silent_errors=True,
+            show_progress=True # LangChain affichera une barre interne
         )
+        
         batch = loader.load()
-        for d in batch:
-            # --- NETTOYAGE DES MÉTADONNÉES ---
-            # On récupère la source (chemin du fichier) que LangChain a déjà extraite
+        
+        # On peut aussi ajouter une barre manuelle pour le nettoyage des métadonnées
+        for d in tqdm(batch, desc=f"Nettoyage {ext}", leave=False):
             original_source = d.metadata.get("source", "inconnue")
-            
-            # On ÉCRASE complètement le dictionnaire metadata pour ne garder que tes 3 champs
             d.metadata = {
                 "source": original_source,
                 "doc_type": "pdf" if ext == ".pdf" else "document_texte",
                 "ingestion_date": date_ingestion
             }
-        
         documents.extend(batch)
 
     # 2. Chargement des URLs
     if urls:
-        # WebBaseLoader extrait le texte propre d'une page HTML
-        loader_web = WebBaseLoader(urls)
-        documents.extend(loader_web.load())
+        print("\nChargement des URLs...")
+        # On charge les URLs une par une pour voir la progression
+        for url in tqdm(urls, desc="Téléchargement Web"):
+            try:
+                loader_web = WebBaseLoader(url)
+                documents.extend(loader_web.load())
+            except Exception as e:
+                print(f"Erreur sur {url}: {e}")
 
-    # 3. Le Chunking (Version Document)
+    # 3. Le Chunking
+    if not documents:
+        print("Aucun document trouvé.")
+        return []
+
+    print(f"\nDécoupage de {len(documents)} documents en chunks...")
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=500,
         chunk_overlap=50,
         separators=["\n\n", "\n", " ", ""]
     )
 
-    # split_documents est magique : il découpe le texte 
-    # MAIS il garde les métadonnées (source) pour chaque chunk !
+    # Le split est généralement très rapide, mais voici comment voir l'avancée
     chunks = text_splitter.split_documents(documents)
+    print(f"✅ Terminé ! {len(chunks)} chunks créés.")
     
     return chunks
 
@@ -86,17 +94,12 @@ def store_in_chroma(chunks, path="./chroma_db"):
         persist_directory=path
     )
     
-    print(f"✅ {len(chunks)} chunks ont été indexés avec succès dans {path}")
+    print(f"{len(chunks)} chunks ont été indexés avec succès dans {path}")
     return vectorstore
 
 
 # --- LE FLUX FINAL (Ton script principal) ---
 
-# Étape 1 : On prépare les données
-chunks = load_and_chunk(data_dir='data', urls=["https://google.com"])
-
-# Étape 2 : On les stocke
-db = store_in_chroma(chunks)
 
 """
 #test
