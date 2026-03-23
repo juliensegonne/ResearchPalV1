@@ -1,12 +1,17 @@
 import datetime
+import logging
 import os
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, DirectoryLoader, WebBaseLoader  #chargement des fichiers
 from langchain_text_splitters import RecursiveCharacterTextSplitter  #chunking
-from langchain_community.vectorstores import Chroma  #bdd ChromaDB
-from langchain_community.embeddings import SentenceTransformerEmbeddings  #embeddings
+from langchain_chroma import Chroma  #bdd ChromaDB
+from langchain_huggingface import HuggingFaceEmbeddings  #embeddings
 
 
 from tqdm import tqdm
+
+CHUNK_SIZE = 500
+CHUNK_OVERLAP = 50
+SEPARATORS = ["\n\n", "\n", ". ", " ", ""]  # Ordre de préférence pour le split
 
 def load_and_chunk(data_dir='data', urls=None):
     documents = []
@@ -60,9 +65,9 @@ def load_and_chunk(data_dir='data', urls=None):
 
     print(f"\nDécoupage de {len(documents)} documents en chunks...")
     text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=500,
-        chunk_overlap=50,
-        separators=["\n\n", "\n", " ", ""]
+        chunk_size=CHUNK_SIZE,
+        chunk_overlap=CHUNK_OVERLAP,
+        separators=SEPARATORS
     )
 
     # Le split est généralement très rapide, mais voici comment voir l'avancée
@@ -85,7 +90,7 @@ def store_in_chroma(chunks, path="./chroma_db"):
     Prend une liste de chunks et les stocke dans une base ChromaDB.
     """
     # On définit le modèle d'embedding (la "traduction" en vecteurs)
-    embeddings = SentenceTransformerEmbeddings(model_name="all-MiniLM-L6-v2")
+    embeddings = HuggingFaceEmbeddings(model_name="all-mpnet-base-v2")
     
     # Création et persistance de la base
     vectorstore = Chroma.from_documents(

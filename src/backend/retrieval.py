@@ -157,3 +157,143 @@ def top_k_similar_indices(
     topk_idx = np.argsort(-sims)[:k].tolist()
     return topk_idx
 
+
+def metadata_filter(
+    vectorstore,
+    doc_type: str | None = None,
+    source: str | None = None,
+    ingestion_date: str | None = None,
+) -> tuple[list[str], list[list[float]], list[dict]]:
+    """
+    Filtre les chunks dans ChromaDB par métadonnées.
+    
+    Paramètres :
+    - vectorstore : instance Chroma
+    - doc_type : filtrer par type ("pdf", "document_texte")
+    - source : filtrer par chemin/nom de fichier source exact
+    - ingestion_date : filtrer par date d'ingestion (format "YYYY-MM-DD")
+    
+    Retourne un tuple (documents, embeddings, metadatas) contenant
+    uniquement les chunks qui correspondent aux filtres.
+    Ces résultats peuvent ensuite être passés à top_k_similar_indices
+    ou mmr_from_documents pour la recherche sémantique.
+    """
+    where_conditions = []
+    if doc_type is not None:
+        where_conditions.append({"doc_type": {"$eq": doc_type}})
+    if source is not None:
+        where_conditions.append({"source": {"$eq": source}})
+    if ingestion_date is not None:
+        where_conditions.append({"ingestion_date": {"$eq": ingestion_date}})
+
+    where_filter = None
+    if len(where_conditions) == 1:
+        where_filter = where_conditions[0]
+    elif len(where_conditions) > 1:
+        where_filter = {"$and": where_conditions}
+
+    data = vectorstore.get(
+        where=where_filter,
+        include=["documents", "embeddings", "metadatas"],
+    )
+
+    return data["documents"], data["embeddings"], data["metadatas"]
+
+
+# ---------------------------------------------------------------------------
+# Cross-encoder reranking
+# ---------------------------------------------------------------------------
+_cross_encoder = None
+
+
+def _get_cross_encoder(model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"):
+    """Chargement paresseux du cross-encoder (une seule fois)."""
+    global _cross_encoder
+    if _cross_encoder is None or _cross_encoder.model.name_or_path != model_name:
+        from sentence_transformers import CrossEncoder
+        _cross_encoder = CrossEncoder(model_name)
+    return _cross_encoder
+
+
+def rerank(
+    query: str,
+    documents: Sequence[str],
+    k: int | None = None,
+    model_name: str = "cross-encoder/ms-marco-MiniLM-L-6-v2",
+) -> List[dict]:
+    """
+    Re-classe une liste de documents par pertinence via un cross-encoder.
+
+    Paramètres :
+    - query : requête en langage naturel
+    - documents : liste de textes candidats (ex. résultats d'un premier retrieval)
+    - k : nombre de résultats à garder (None = tous, triés)
+    - model_name : modèle cross-encoder à utiliser
+
+    Retourne une liste de dicts triée par score décroissant :
+        [{"text": str, "score": float, "original_index": int}, ...]
+    """
+    if not documents:
+        return []
+
+    encoder = _get_cross_encoder(model_name)
+    pairs = [[query, doc] for doc in documents]
+    scores = encoder.predict(pairs).tolist()
+
+    ranked = sorted(
+        [
+            {"text": doc, "score": float(score), "original_index": idx}
+            for idx, (doc, score) in enumerate(zip(documents, scores))
+        ],
+        key=lambda x: x["score"],
+        reverse=True,
+    )
+
+    if k is not None:
+        ranked = ranked[:k]
+
+    return ranked
+
+
+def score_threshold_filter(
+    query_embedding,
+    doc_embeddings: Sequence[Iterable[float]],
+    documents: Sequence[str],
+    threshold: float = 0.5,
+) -> List[dict]:
+    """
+    Retourne uniquement les documents dont la similarité cosinus avec
+    la requête est >= threshold, triés par score décroissant.
+
+    Paramètres :
+    - query_embedding : vecteur de la requête
+    - doc_embeddings : liste de vecteurs des documents
+    - documents : textes correspondant aux embeddings
+    - threshold : seuil minimal de similarité cosinus (entre 0 et 1)
+
+    Retourne une liste de dicts :
+        [{"text": str, "score": float, "original_index": int}, ...]
+    """
+    docs = np.asarray([np.asarray(v, dtype=float) for v in doc_embeddings])
+    query = np.asarray(list(query_embedding), dtype=float)
+
+    if query.ndim == 2 and query.shape[0] == 1:
+        query = query[0]
+
+    doc_norms = np.linalg.norm(docs, axis=1)
+    q_norm = np.linalg.norm(query)
+    doc_norms_safe = np.where(doc_norms == 0, 1.0, doc_norms)
+    q_norm_safe = q_norm if q_norm != 0 else 1.0
+
+    sims = (docs @ query) / (doc_norms_safe * q_norm_safe)
+    sims = np.clip(sims, -1.0, 1.0)
+
+    results = [
+        {"text": documents[i], "score": float(sims[i]), "original_index": i}
+        for i in range(len(documents))
+        if sims[i] >= threshold
+    ]
+
+    results.sort(key=lambda x: x["score"], reverse=True)
+    return results
+
