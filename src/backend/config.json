@@ -1,0 +1,10 @@
+{
+    "chroma_path": "./chroma_db",
+    "retrieval_strategy": "cosine",
+    "retrieval_k": 5,
+    "retrieval_lambda_mult": 0.5,
+    "score_threshold": 0.5,
+    "embedding_model": "all-mpnet-base-v2",
+    "llm": "gemini",
+    "rerank": false
+}

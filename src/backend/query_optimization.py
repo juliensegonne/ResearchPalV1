@@ -8,7 +8,7 @@ Utilise Gemini pour décomposer une requête utilisateur en :
 
 import json
 import logging
-import os
+from typing import Callable
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -60,39 +60,21 @@ Requête utilisateur : {query}
 """
 
 
-def self_query(query: str) -> dict:
+def self_query(query: str, complete_fn: Callable[[str], str]) -> dict:
     """
-    Décompose une requête utilisateur via Gemini en :
+    Décompose une requête utilisateur via un LLM en :
       - semantic_query : str — requête optimisée pour la recherche vectorielle
       - metadata_filter : dict | None — filtre ChromaDB `where`
 
-    Retourne la requête originale sans filtre si Gemini n'est pas disponible
-    ou si le parsing échoue.
+    Retourne la requête originale sans filtre si l'appel échoue.
     """
     fallback = {"semantic_query": query, "metadata_filter": None}
 
-    api_key = os.environ.get("GEMINI_API_KEY")
-    if not api_key:
-        logger.warning("⚠️ Self-query désactivé : GEMINI_API_KEY absente")
-        return fallback
-
     try:
-        from google import genai
-
-        client = genai.Client(api_key=api_key)
-
         schema_text = json.dumps(METADATA_SCHEMA, indent=2, ensure_ascii=False)
         prompt = SELF_QUERY_PROMPT.format(schema=schema_text, query=query)
 
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=genai.types.GenerateContentConfig(
-                temperature=0.0,
-            ),
-        )
-
-        raw = response.text.strip()
+        raw = complete_fn(prompt).strip()
         # Nettoyer d'éventuels blocs markdown ```json ... ```
         if raw.startswith("```"):
             raw = raw.split("\n", 1)[1]

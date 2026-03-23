@@ -1,18 +1,65 @@
+import json
 import logging
 import os
+from typing import Callable
 
 from retrieval import top_k_similar_indices, mmr_from_documents, score_threshold_filter, rerank
+from generation import gemini_llm, gemini_complete
 
 logger = logging.getLogger("uvicorn.error")
 
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
-CHROMA_PATH = "./chroma_db"
-RETRIEVAL_STRATEGY = "cosine"   # "cosine" | "mmr" | "threshold"
-RETRIEVAL_K = 5
-RETRIEVAL_LAMBDA_MULT = 0.5
-SCORE_THRESHOLD = 0.5
+_DEFAULTS = {
+    "chroma_path": "./chroma_db",
+    "retrieval_strategy": "cosine",
+    "retrieval_k": 5,
+    "retrieval_lambda_mult": 0.5,
+    "score_threshold": 0.5,
+    "embedding_model": "all-mpnet-base-v2",
+    "llm": "gemini",
+    "rerank": False,
+}
+
+_LLM_REGISTRY: dict[str, Callable[[str, str, list[dict]], str]] = {
+    "gemini": gemini_llm,
+}
+
+_COMPLETE_REGISTRY: dict[str, Callable[[str], str]] = {
+    "gemini": gemini_complete,
+}
+
+_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
+
+
+def _load_config() -> dict:
+    """Load config from config.json, falling back to defaults."""
+    cfg = dict(_DEFAULTS)
+    if os.path.exists(_CONFIG_PATH):
+        try:
+            with open(_CONFIG_PATH) as f:
+                user_cfg = json.load(f)
+            cfg.update(user_cfg)
+            logger.info(f"⚙️ Configuration chargée depuis {_CONFIG_PATH}")
+        except Exception as e:
+            logger.warning(f"⚠️ Erreur lecture config, valeurs par défaut utilisées : {e}")
+    else:
+        logger.info("⚙️ Aucun config.json trouvé, valeurs par défaut utilisées")
+    return cfg
+
+
+_cfg = _load_config()
+
+CHROMA_PATH: str = _cfg["chroma_path"]
+RETRIEVAL_STRATEGY: str = _cfg["retrieval_strategy"]
+RETRIEVAL_K: int = int(_cfg["retrieval_k"])
+RETRIEVAL_LAMBDA_MULT: float = float(_cfg["retrieval_lambda_mult"])
+SCORE_THRESHOLD: float = float(_cfg["score_threshold"])
+EMBEDDING_MODEL: str = _cfg["embedding_model"]
+LLM_FN: Callable[[str, str, list[dict]], str] = _LLM_REGISTRY.get(_cfg["llm"], gemini_llm)
+COMPLETE_FN: Callable[[str], str] = _COMPLETE_REGISTRY.get(_cfg["llm"], gemini_complete)
+RERANK_ENABLED: bool = bool(_cfg["rerank"])
 
 # ---------------------------------------------------------------------------
 # State
@@ -28,7 +75,7 @@ def init_models():
     global embedding_model, vectorstore
     if embedding_model is None:
         from langchain_huggingface import HuggingFaceEmbeddings
-        embedding_model = HuggingFaceEmbeddings(model_name="all-mpnet-base-v2")
+        embedding_model = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
 
     if vectorstore is None and os.path.exists(CHROMA_PATH):
         from langchain_chroma import Chroma
@@ -92,7 +139,7 @@ def retrieve(query: str) -> list[str]:
         candidates = [documents[i] for i in indices]
 
     # Reranking cross-encoder
-    if candidates:
+    if RERANK_ENABLED and candidates:
         ranked = rerank(query=query, documents=candidates, k=RETRIEVAL_K)
         return [item["text"] for item in ranked]
     return candidates
@@ -104,42 +151,12 @@ def generate_answer(
     sources: list[str],
     conversation_history: list[dict],
 ) -> str:
-    """Call Gemini LLM. Falls back to a formatted context summary."""
+    """Generate an answer using the configured LLM function.
+
+    Falls back to formatted sources if the LLM call fails.
+    """
     try:
-        api_key = os.environ.get("GEMINI_API_KEY")
-        if not api_key:
-            logger.warning("⚠️ Aucune clé API trouvée (GEMINI_API_KEY)")
-        if api_key:
-            from google import genai
-
-            client = genai.Client(api_key=api_key)
-
-            system_prompt = (
-                "Tu es ResearchPal, un assistant de recherche factuel. "
-                "Réponds en te basant UNIQUEMENT sur le contexte fourni. "
-                "Cite tes sources avec [Source N]. "
-                "Si le contexte ne permet pas de répondre, dis-le clairement."
-            )
-
-            history_parts = []
-            for msg in conversation_history[-20:]:
-                role = "user" if msg["role"] == "user" else "model"
-                history_parts.append(genai.types.Content(role=role, parts=[genai.types.Part(text=msg["content"])]))
-
-            user_message = f"Contexte :\n{context}\n\nQuestion : {query}"
-
-            response = client.models.generate_content(
-                model="gemini-2.5-flash",
-                contents=[
-                    *history_parts,
-                    genai.types.Content(role="user", parts=[genai.types.Part(text=user_message)]),
-                ],
-                config=genai.types.GenerateContentConfig(
-                    system_instruction=system_prompt,
-                    temperature=0.3,
-                ),
-            )
-            return response.text
+        return LLM_FN(query, context, conversation_history)
     except Exception as e:
         logger.error(f"❌ Erreur LLM : {e}")
 
