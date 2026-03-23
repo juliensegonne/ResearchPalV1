@@ -1,0 +1,55 @@
+.app-layout {
+  display: flex;
+  height: 100vh;
+  background: #0e0e1a;
+}
+
+.sidebar {
+  width: 220px;
+  background: #16213e;
+  border-right: 1px solid #0f3460;
+  display: flex;
+  flex-direction: column;
+  padding: 20px 0;
+  flex-shrink: 0;
+}
+
+.logo {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0 20px 24px;
+  border-bottom: 1px solid #0f3460;
+
+  .logo-icon { font-size: 1.6rem; }
+  .logo-text {
+    font-size: 1.2rem;
+    font-weight: 700;
+    color: #e0e0e0;
+  }
+}
+
+.nav-links {
+  display: flex;
+  flex-direction: column;
+  padding: 16px 12px;
+  gap: 4px;
+
+  a {
+    display: block;
+    padding: 10px 14px;
+    border-radius: 8px;
+    color: #b0b0b0;
+    text-decoration: none;
+    font-size: 0.95rem;
+    transition: background 0.15s;
+
+    &:hover { background: rgba(255,255,255,0.05); color: #e0e0e0; }
+    &.active { background: #0f3460; color: #fff; }
+  }
+}
+
+.main-content {
+  flex: 1;
+  overflow: hidden;
+}

@@ -1,0 +1,73 @@
+<div class="documents-container">
+  <h2>📄 Gestion des Documents</h2>
+
+  <!-- Status message -->
+  @if (statusMessage()) {
+    <div class="status-msg" [class.success]="statusType() === 'success'" [class.error]="statusType() === 'error'">
+      {{ statusMessage() }}
+    </div>
+  }
+
+  <!-- Upload section -->
+  <div class="upload-section">
+    <div class="upload-card">
+      <h3>📁 Téléverser un fichier</h3>
+      <p>Formats acceptés : PDF, TXT, Markdown</p>
+      <label class="file-label" [class.disabled]="uploading()">
+        <input type="file" accept=".pdf,.txt,.md" (change)="onFileSelected($event)" [disabled]="uploading()" hidden />
+        {{ uploading() ? 'Envoi en cours...' : 'Choisir un fichier' }}
+      </label>
+    </div>
+
+    <div class="upload-card">
+      <h3>🌐 Ajouter une URL</h3>
+      <p>Ingérer une page web directement</p>
+      <div class="url-input">
+        <input
+          type="url"
+          [ngModel]="url()"
+          (ngModelChange)="url.set($event)"
+          placeholder="https://example.com/article"
+          [disabled]="uploading()"
+        />
+        <button (click)="addUrl()" [disabled]="uploading() || !url().trim()">Ajouter</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- Ingest button -->
+  <div class="ingest-section">
+    <button class="btn-ingest" (click)="ingestAll()" [disabled]="ingesting()">
+      {{ ingesting() ? '⏳ Ingestion en cours...' : '🚀 Ingérer tous les fichiers' }}
+    </button>
+    <span class="ingest-hint">Génère les embeddings et indexe dans ChromaDB</span>
+    <button class="btn-clear" (click)="clearDatabase()" [disabled]="clearing()">
+      {{ clearing() ? '⏳ Suppression...' : '🗑️ Vider la base' }}
+    </button>
+  </div>
+
+  <!-- Document list -->
+  <div class="doc-list">
+    <h3>📋 Documents disponibles ({{ documents().length }})</h3>
+    @if (documents().length === 0) {
+      <p class="empty">Aucun document. Téléversez un fichier ou ajoutez une URL.</p>
+    }
+    @for (doc of documents(); track doc.name) {
+      <div class="doc-item">
+        <span class="doc-icon">
+          @if (doc.type === 'url') { 🌐 }
+          @else if (doc.name.endsWith('.pdf')) { 📕 }
+          @else if (doc.name.endsWith('.md')) { 📝 }
+          @else { 📄 }
+        </span>
+        <div class="doc-info">
+          <span class="doc-name">{{ doc.name }}</span>
+          <span class="doc-meta">
+            @if (doc.type === 'file') { {{ formatSize(doc.size) }} · }
+            {{ doc.modified | date:'short' }}
+          </span>
+        </div>
+      </div>
+    }
+  </div>
+</div>

@@ -1,0 +1,76 @@
+<div class="chat-container">
+  <!-- Header -->
+  <div class="chat-header">
+    <h2>💬 ResearchPal</h2>
+    <div class="header-controls">
+      <button class="btn-clear" (click)="clearHistory()" title="Effacer l'historique">
+        🗑️
+      </button>
+    </div>
+  </div>
+
+  <!-- Messages -->
+  <div class="messages-area">
+    @if (messages().length === 0) {
+      <div class="empty-state">
+        <div class="empty-icon">🔍</div>
+        <h3>Bienvenue sur ResearchPal</h3>
+        <p>Posez une question sur vos documents ingérés.</p>
+      </div>
+    }
+
+    @for (msg of messages(); track $index) {
+      <div class="message" [class.user]="msg.role === 'user'" [class.assistant]="msg.role === 'assistant'">
+        <div class="message-avatar">
+          {{ msg.role === 'user' ? '👤' : '🤖' }}
+        </div>
+        <div class="message-body">
+          <div class="message-content">{{ msg.content }}</div>
+          @if (msg.sources.length > 0) {
+            <button class="btn-sources" (click)="toggleSources($index)">
+              📚 {{ isSourceExpanded($index) ? 'Masquer' : 'Afficher' }} les sources ({{ msg.sources.length }})
+            </button>
+            @if (isSourceExpanded($index)) {
+              <div class="sources-list">
+                @for (src of msg.sources; track $index) {
+                  <div class="source-item">
+                    <span class="source-badge">Source {{ $index + 1 }}</span>
+                    <p>{{ src }}</p>
+                  </div>
+                }
+              </div>
+            }
+          }
+        </div>
+      </div>
+    }
+
+    @if (loading()) {
+      <div class="message assistant">
+        <div class="message-avatar">🤖</div>
+        <div class="message-body">
+          <div class="typing-indicator">
+            <span></span><span></span><span></span>
+          </div>
+        </div>
+      </div>
+    }
+
+    <div #messagesEnd></div>
+  </div>
+
+  <!-- Input -->
+  <div class="input-area">
+    <input
+      type="text"
+      [ngModel]="query()"
+      (ngModelChange)="query.set($event)"
+      (keydown)="onKeydown($event)"
+      placeholder="Posez votre question..."
+      [disabled]="loading()"
+    />
+    <button class="btn-send" (click)="sendMessage()" [disabled]="loading() || !query().trim()">
+      ➤
+    </button>
+  </div>
+</div>

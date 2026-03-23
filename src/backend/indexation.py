@@ -9,6 +9,8 @@ from langchain_huggingface import HuggingFaceEmbeddings  #embeddings
 
 from tqdm import tqdm
 
+logger = logging.getLogger("uvicorn.error")
+
 CHUNK_SIZE = 500
 CHUNK_OVERLAP = 50
 SEPARATORS = ["\n\n", "\n", ". ", " ", ""]  # Ordre de préférence pour le split
@@ -24,7 +26,7 @@ def load_and_chunk(data_dir='data', urls=None):
         ".md": TextLoader,
     }
     
-    print("Chargement des fichiers locaux...")
+    logger.info("Chargement des fichiers locaux...")
     for ext, loader_cls in loaders_config.items():
         # Utilisation de show_progress=True (supporté par DirectoryLoader si tqdm est installé)
         loader = DirectoryLoader(
@@ -49,21 +51,21 @@ def load_and_chunk(data_dir='data', urls=None):
 
     # 2. Chargement des URLs
     if urls:
-        print("\nChargement des URLs...")
+        logger.info("\nChargement des URLs...")
         # On charge les URLs une par une pour voir la progression
         for url in tqdm(urls, desc="Téléchargement Web"):
             try:
                 loader_web = WebBaseLoader(url)
                 documents.extend(loader_web.load())
             except Exception as e:
-                print(f"Erreur sur {url}: {e}")
+                logger.exception("Erreur sur %s: %s", url, e)
 
     # 3. Le Chunking
     if not documents:
-        print("Aucun document trouvé.")
+        logger.warning("Aucun document trouvé.")
         return []
 
-    print(f"\nDécoupage de {len(documents)} documents en chunks...")
+    logger.info(f"\nDécoupage de {len(documents)} documents en chunks...")
     text_splitter = RecursiveCharacterTextSplitter(
         chunk_size=CHUNK_SIZE,
         chunk_overlap=CHUNK_OVERLAP,
@@ -72,7 +74,8 @@ def load_and_chunk(data_dir='data', urls=None):
 
     # Le split est généralement très rapide, mais voici comment voir l'avancée
     chunks = text_splitter.split_documents(documents)
-    print(f"✅ Terminé ! {len(chunks)} chunks créés.")
+    logger.info(f"✅ Terminé ! {len(chunks)} chunks créés.")
+    logger.info(f"Exemple de chunk : {chunks[0].page_content}... | Métadonnées : {chunks[0].metadata}")
     
     return chunks
 
@@ -99,7 +102,7 @@ def store_in_chroma(chunks, path="./chroma_db"):
         persist_directory=path
     )
     
-    print(f"{len(chunks)} chunks ont été indexés avec succès dans {path}")
+    logger.info(f"{len(chunks)} chunks ont été indexés avec succès dans {path}")
     return vectorstore
 
 

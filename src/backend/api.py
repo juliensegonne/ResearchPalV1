@@ -1,0 +1,374 @@
+import logging
+import os
+import sys
+import uuid
+import shutil
+from datetime import datetime
+from typing import Optional
+
+from fastapi import FastAPI, UploadFile, File, Form, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+
+# Ensure task modules are importable
+sys.path.insert(0, os.path.dirname(__file__))
+
+from indexation import load_and_chunk, store_in_chroma
+from retrieval import top_k_similar_indices, mmr_from_documents, score_threshold_filter, rerank
+
+app = FastAPI(
+    title="ResearchPal API",
+    description=(
+        "API RAG (Retrieval-Augmented Generation) pour ResearchPal.\n\n"
+        "- **Documents** : upload, ingestion et listing de fichiers (PDF, TXT, MD) et URLs.\n"
+        "- **Recherche** : similarité cosinus ou MMR, sans LLM.\n"
+        "- **Chat** : requête RAG conversationnelle avec Gemini.\n"
+        "- **Historique** : consultation et suppression de l'historique de conversation."
+    ),
+    version="1.0.0",
+    openapi_tags=[
+        {"name": "Santé", "description": "État du serveur"},
+        {"name": "Documents", "description": "Gestion des fichiers et ingestion"},
+        {"name": "Recherche", "description": "Recherche sémantique (cosinus / MMR)"},
+        {"name": "Chat", "description": "Chat RAG avec LLM"},
+        {"name": "Historique", "description": "Historique de conversation"},
+    ],
+)
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "http://localhost:4200",
+        "http://127.0.0.1:4200",
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# ---------------------------------------------------------------------------
+# Global state
+# ---------------------------------------------------------------------------
+CHROMA_PATH = "./chroma_db"
+DATA_DIR = "data"
+RETRIEVAL_STRATEGY = "cosine"   # "cosine" | "mmr" | "threshold"
+RETRIEVAL_K = 5
+RETRIEVAL_LAMBDA_MULT = 0.5
+SCORE_THRESHOLD = 0.5
+embedding_model = None
+vectorstore = None
+doc_embeddings = None
+documents = None
+
+# Conversation history: list of {role, content, sources}
+conversation_history: list[dict] = []
+
+
+def _init_models():
+    """Lazy-load embedding model + vectorstore."""
+    global embedding_model, vectorstore, doc_embeddings, documents
+    if embedding_model is None:
+        from langchain_huggingface import HuggingFaceEmbeddings
+        embedding_model = HuggingFaceEmbeddings(model_name="all-mpnet-base-v2")
+
+    if vectorstore is None and os.path.exists(CHROMA_PATH):
+        from langchain_chroma import Chroma
+        vectorstore = Chroma(
+            persist_directory=CHROMA_PATH,
+            embedding_function=embedding_model,
+        )
+        _refresh_docs()
+
+
+def _refresh_docs():
+    """Reload embeddings/documents from vectorstore."""
+    global doc_embeddings, documents
+    if vectorstore is not None:
+        data = vectorstore.get(include=["embeddings", "documents"])
+        doc_embeddings = data["embeddings"]
+        documents = data["documents"]
+
+
+# ---------------------------------------------------------------------------
+# Pydantic models
+# ---------------------------------------------------------------------------
+class QueryRequest(BaseModel):
+    query: str
+
+
+class ChatMessage(BaseModel):
+    role: str          # "user" | "assistant"
+    content: str
+    sources: list[str] = []
+
+
+# ---------------------------------------------------------------------------
+# Endpoints
+# ---------------------------------------------------------------------------
+@app.on_event("startup")
+def startup():
+    os.makedirs(DATA_DIR, exist_ok=True)
+    _init_models()
+
+
+@app.get("/api/health", tags=["Santé"], summary="Vérifier l'état du serveur")
+def health():
+    has_db = os.path.exists(CHROMA_PATH)
+    doc_count = len(documents) if documents else 0
+    return {"status": "ok", "has_database": has_db, "document_count": doc_count}
+
+
+# ---- Document management --------------------------------------------------
+
+@app.post("/api/documents/upload", tags=["Documents"], summary="Téléverser un fichier")
+async def upload_document(file: UploadFile = File(...)):
+    """Upload a file (PDF, TXT, MD) into the data directory."""
+    allowed = {".pdf", ".txt", ".md"}
+    ext = os.path.splitext(file.filename or "")[1].lower()
+    if ext not in allowed:
+        raise HTTPException(400, f"Type de fichier non supporté : {ext}")
+
+    safe_name = os.path.basename(file.filename or "upload")
+    dest = os.path.join(DATA_DIR, safe_name)
+    with open(dest, "wb") as f:
+        content = await file.read()
+        f.write(content)
+
+    return {"message": f"Fichier '{safe_name}' téléversé avec succès.", "filename": safe_name}
+
+
+@app.post("/api/documents/add-url", tags=["Documents"], summary="Ingérer une page web par URL")
+async def add_url(url: str = Form(...)):
+    """Ingest a web page by URL."""
+    if not url.startswith(("http://", "https://")):
+        raise HTTPException(400, "URL invalide")
+    try:
+        chunks = load_and_chunk(data_dir=DATA_DIR, urls=[url])
+        if chunks:
+            store_in_chroma(chunks, path=CHROMA_PATH)
+            _init_models()
+            _refresh_docs()
+        return {"message": f"URL ingérée : {url}", "chunks": len(chunks)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+@app.get("/api/documents", tags=["Documents"], summary="Lister les fichiers et URLs disponibles")
+def list_documents():
+    """List files in the data directory and ingested URLs from the vectorstore."""
+    items = []
+
+    # 1. Fichiers locaux
+    for f in os.listdir(DATA_DIR):
+        path = os.path.join(DATA_DIR, f)
+        if os.path.isfile(path):
+            items.append({
+                "name": f,
+                "type": "file",
+                "size": os.path.getsize(path),
+                "modified": datetime.fromtimestamp(os.path.getmtime(path)).isoformat(),
+            })
+
+    # 2. URLs ingérées (extraites des métadonnées ChromaDB)
+    if vectorstore is not None:
+        try:
+            data = vectorstore.get(include=["metadatas"])
+            seen_urls: set[str] = set()
+            for meta in (data.get("metadatas") or []):
+                source = (meta or {}).get("source", "")
+                if source.startswith(("http://", "https://")) and source not in seen_urls:
+                    seen_urls.add(source)
+                    items.append({
+                        "name": source,
+                        "type": "url",
+                        "size": 0,
+                        "modified": (meta or {}).get("ingestion_date", ""),
+                    })
+        except Exception:
+            pass
+
+    return items
+
+
+@app.post("/api/documents/ingest", tags=["Documents"], summary="Indexer tous les fichiers du dossier data/")
+async def ingest_documents():
+    """Ingest all files currently in the data directory."""
+    global vectorstore
+    try:
+        chunks = load_and_chunk(data_dir=DATA_DIR)
+        if not chunks:
+            raise HTTPException(400, "Aucun document trouvé dans le dossier data/")
+        vectorstore = store_in_chroma(chunks, path=CHROMA_PATH)
+        _refresh_docs()
+        return {"message": f"{len(chunks)} chunks indexés avec succès."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
+
+
+# ---- Search / Chat --------------------------------------------------------
+
+@app.delete("/api/documents/clear", tags=["Documents"], summary="Vider la base de données vectorielle")
+def clear_database():
+    """Delete the ChromaDB database and all uploaded files."""
+    global vectorstore, doc_embeddings, documents
+    if os.path.exists(CHROMA_PATH):
+        shutil.rmtree(CHROMA_PATH)
+    for f in os.listdir(DATA_DIR):
+        path = os.path.join(DATA_DIR, f)
+        if os.path.isfile(path):
+            os.remove(path)
+    vectorstore = None
+    doc_embeddings = None
+    documents = None
+    return {"message": "Base de données et fichiers supprimés."}
+
+
+# ---- Search / Chat --------------------------------------------------------
+
+def _retrieve(query: str, query_embedding) -> list[str]:
+    """Retrieve relevant documents using the configured strategy, then rerank."""
+    if RETRIEVAL_STRATEGY == "mmr":
+        candidates = mmr_from_documents(
+            documents=documents,
+            doc_embeddings=doc_embeddings,
+            query_embedding=query_embedding,
+            k=RETRIEVAL_K,
+            lambda_mult=RETRIEVAL_LAMBDA_MULT,
+        )
+    elif RETRIEVAL_STRATEGY == "threshold":
+        filtered = score_threshold_filter(
+            query_embedding=query_embedding,
+            doc_embeddings=doc_embeddings,
+            documents=documents,
+            threshold=SCORE_THRESHOLD,
+        )
+        candidates = [item["text"] for item in filtered]
+    else:
+        indices = top_k_similar_indices(query_embedding, doc_embeddings, k=RETRIEVAL_K)
+        candidates = [documents[i] for i in indices]
+
+    # Reranking cross-encoder
+    if candidates:
+        ranked = rerank(query=query, documents=candidates, k=RETRIEVAL_K)
+        return [item["text"] for item in ranked]
+    return candidates
+
+
+@app.post("/api/search", tags=["Recherche"], summary="Recherche sémantique (sans LLM)")
+def search(req: QueryRequest):
+    """Search documents using the configured retrieval strategy (no LLM)."""
+    _init_models()
+    if doc_embeddings is None or len(doc_embeddings) == 0:
+        raise HTTPException(400, "La base de données est vide. Veuillez d'abord ingérer des documents.")
+
+    query_embedding = embedding_model.embed_query(req.query)
+    retrieved = _retrieve(req.query, query_embedding)
+
+    results = [{"rank": rank, "text": text} for rank, text in enumerate(retrieved, 1)]
+    return {"query": req.query, "strategy": RETRIEVAL_STRATEGY, "results": results}
+
+
+@app.post("/api/chat", tags=["Chat"], summary="Chat RAG conversationnel")
+def chat(req: QueryRequest):
+    """
+    RAG chat endpoint: retrieve relevant chunks, build a prompt and return
+    the answer with cited sources.
+
+    If no LLM is configured, returns the retrieved context as-is so the
+    frontend still works.
+    """
+    _init_models()
+    if doc_embeddings is None or len(doc_embeddings) == 0:
+        raise HTTPException(400, "Base vide — ingérez des documents d'abord.")
+
+    query_embedding = embedding_model.embed_query(req.query)
+    retrieved = _retrieve(req.query, query_embedding)
+
+    sources = [t[:300] for t in retrieved]
+
+    # Build context for LLM
+    context_block = "\n\n".join(
+        f"[Source {i+1}] {chunk}" for i, chunk in enumerate(retrieved)
+    )
+
+    # Try to call an LLM; fallback to returning raw context
+    answer = _generate_answer(req.query, context_block, sources)
+
+    # Store in history (keep last 10 turns = 20 messages)
+    conversation_history.append({"role": "user", "content": req.query, "sources": []})
+    conversation_history.append({"role": "assistant", "content": answer, "sources": sources})
+    del conversation_history[:-20]
+
+    return {
+        "answer": answer,
+        "sources": sources,
+        "history": conversation_history,
+    }
+
+
+logger = logging.getLogger("uvicorn.error")
+
+
+def _generate_answer(query: str, context: str, sources: list[str]) -> str:
+    """Try to call Gemini. Falls back to a formatted context summary."""
+    try:
+        api_key = os.environ.get("GEMINI_API_KEY")
+        if not api_key:
+            logger.warning("⚠️ Aucune clé API trouvée (GEMINI_API_KEY)")
+        if api_key:
+            from google import genai
+
+            client = genai.Client(api_key=api_key)
+
+            system_prompt = (
+                "Tu es ResearchPal, un assistant de recherche factuel. "
+                "Réponds en te basant UNIQUEMENT sur le contexte fourni. "
+                "Cite tes sources avec [Source N]. "
+                "Si le contexte ne permet pas de répondre, dis-le clairement."
+            )
+
+            history_parts = []
+            for msg in conversation_history[-20:]:
+                role = "user" if msg["role"] == "user" else "model"
+                history_parts.append(genai.types.Content(role=role, parts=[genai.types.Part(text=msg["content"])]))
+
+            user_message = f"Contexte :\n{context}\n\nQuestion : {query}"
+
+            response = client.models.generate_content(
+                model="gemini-2.5-flash",
+                contents=[
+                    *history_parts,
+                    genai.types.Content(role="user", parts=[genai.types.Part(text=user_message)]),
+                ],
+                config=genai.types.GenerateContentConfig(
+                    system_instruction=system_prompt,
+                    temperature=0.3,
+                ),
+            )
+            return response.text
+    except Exception as e:
+        logger.error(f"❌ Erreur LLM : {e}")
+
+    # Fallback: formatted retrieval results
+    lines = ["Voici les passages les plus pertinents trouvés :\n"]
+    for i, src in enumerate(sources, 1):
+        lines.append(f"**[Source {i}]** {src}\n")
+    return "\n".join(lines)
+
+
+@app.get("/api/history", tags=["Historique"], summary="Consulter l'historique")
+def get_history():
+    return conversation_history
+
+
+@app.delete("/api/history", tags=["Historique"], summary="Effacer l'historique")
+def clear_history():
+    conversation_history.clear()
+    return {"message": "Historique effacé."}
+
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("api:app", host="0.0.0.0", port=8000, reload=True)

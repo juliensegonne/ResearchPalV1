@@ -1,0 +1,19 @@
+<div class="app-layout">
+  <nav class="sidebar">
+    <div class="logo">
+      <span class="logo-icon">🎓</span>
+      <span class="logo-text">ResearchPal</span>
+    </div>
+    <div class="nav-links">
+      <a routerLink="/" routerLinkActive="active" [routerLinkActiveOptions]="{exact: true}">
+        💬 Chat
+      </a>
+      <a routerLink="/documents" routerLinkActive="active">
+        📄 Documents
+      </a>
+    </div>
+  </nav>
+  <main class="main-content">
+    <router-outlet />
+  </main>
+</div>
