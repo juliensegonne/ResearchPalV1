@@ -13,6 +13,7 @@ ResearchPalV1/
 │   │   ├── Dockerfile
 │   │   ├── .venv/         # Environnement virtuel Python
 │   │   ├── api.py         # Serveur API REST
+│   │   ├── rag_pipeline.py # Pipeline RAG (retrieval + génération LLM)
 │   │   ├── indexation.py  # Ingestion & indexation (ChromaDB)
 │   │   ├── retrieval.py   # Stratégies de retrieval (cosinus, MMR, reranking, filtrage)
 │   │   ├── query_optimization.py  # Optimisation de requête par self-query (Gemini)
@@ -108,7 +109,8 @@ L'interface sera accessible sur **http://localhost:4200**.
 
 | Fichier | Rôle |
 |---------|------|
-| `api.py` | Serveur FastAPI, endpoints REST, appel Gemini |
+| `api.py` | Serveur FastAPI, endpoints REST |
+| `rag_pipeline.py` | Pipeline RAG : retrieval (cosinus/MMR/seuil + reranking) et génération LLM (Gemini) |
 | `indexation.py` | Chargement de fichiers (PDF/TXT/MD/URL), chunking, stockage ChromaDB |
 | `retrieval.py` | Similarité cosinus, MMR, filtrage par métadonnées, reranking cross-encoder, seuil de score |
 | `query_optimization.py` | Self-query : décomposition requête → requête sémantique + filtres métadonnées via Gemini |
