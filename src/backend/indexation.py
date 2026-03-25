@@ -92,7 +92,7 @@ def store_in_chroma(chunks, path="./chroma_db"):
     """
     Prend une liste de chunks et les stocke dans une base ChromaDB.
     """
-    # On définit le modèle d'embedding (la "traduction" en vecteurs)
+    # On définit le modèle d'embedding
     embeddings = HuggingFaceEmbeddings(model_name="all-mpnet-base-v2")
     
     # Création et persistance de la base
@@ -105,18 +105,5 @@ def store_in_chroma(chunks, path="./chroma_db"):
     logger.info(f"{len(chunks)} chunks ont été indexés avec succès dans {path}")
     return vectorstore
 
-
-# --- LE FLUX FINAL (Ton script principal) ---
-
-
-"""
-#test
-data = db.get(limit=3)
-
-print(f"--- Nombre total de chunks : {len(db.get()['ids'])} ---")
-
-for i in range(len(data['documents'])):
-    print(f"\n--- Chunk {i+1} ---")
-    print(f"Contenu (tronqué) : {data['documents'][i][:100]}...")
-    print(f"Métadonnées : {data['metadatas'][i]}")
-"""
+#chunks = load_and_chunk(data_dir='data', urls=["https://fr.wikipedia.org/wiki/Masashi_Kishimoto"]) 
+#store_in_chroma(chunks, path="./chroma_db") 

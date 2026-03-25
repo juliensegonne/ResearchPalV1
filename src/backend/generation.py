@@ -9,6 +9,8 @@ SYSTEM_PROMPT = (
     "Réponds en te basant UNIQUEMENT sur le contexte fourni. "
     "Cite tes sources avec [Source N]. "
     "Si le contexte ne permet pas de répondre, dis-le clairement."
+    #question refinement
+    "Quand une question est posée, suggère une version améliorée de la question avec plus de vocabulaires et de verbes spécifiques, puis réponds à la version améliorée."
 )
 
 

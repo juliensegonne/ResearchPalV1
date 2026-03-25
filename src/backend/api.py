@@ -1,6 +1,8 @@
 import os
 import sys
 import shutil
+import asyncio
+import logging
 from contextlib import asynccontextmanager
 from datetime import datetime
 
@@ -44,10 +46,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:4200",
-        "http://127.0.0.1:4200",
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -60,6 +59,8 @@ DATA_DIR = "data"
 
 # Conversation history: list of {role, content, sources}
 conversation_history: list[dict] = []
+
+logger = logging.getLogger("researchpal")
 
 
 # ---------------------------------------------------------------------------
@@ -103,20 +104,34 @@ async def upload_document(file: UploadFile = File(...)):
     return {"message": f"Fichier '{safe_name}' téléversé avec succès.", "filename": safe_name}
 
 
+async def _ingest_worker(data_dir: str, urls: list | None = None):
+    """Worker asynchrone : exécute les fonctions bloquantes dans un thread."""
+    try:
+        logger.info("Démarrage du worker d'ingestion (background)...")
+        # run blocking load_and_chunk in thread
+        chunks = await asyncio.to_thread(load_and_chunk, data_dir, urls)
+        if not chunks:
+            logger.info("Aucun chunk produit par load_and_chunk.")
+            return
+        # store_in_chroma (bloquant) en thread
+        await asyncio.to_thread(store_in_chroma, chunks, rag.CHROMA_PATH)
+        # réinitialiser / rafraîchir l'état du pipeline (si nécessaire, en thread)
+        await asyncio.to_thread(rag.init_models)
+        await asyncio.to_thread(rag.refresh_docs)
+        logger.info("Ingestion terminée.")
+    except Exception as e:
+        logger.exception("Erreur dans le worker d'ingestion: %s", e)
+
+
 @app.post("/api/documents/add-url", tags=["Documents"], summary="Ingérer une page web par URL")
 async def add_url(url: str = Form(...)):
-    """Ingest a web page by URL."""
+    """Enregistre l'URL puis démarre l'ingestion en tâche de fond."""
     if not url.startswith(("http://", "https://")):
         raise HTTPException(400, "URL invalide")
-    try:
-        chunks = load_and_chunk(data_dir=DATA_DIR, urls=[url])
-        if chunks:
-            store_in_chroma(chunks, path=rag.CHROMA_PATH)
-            rag.init_models()
-            rag.refresh_docs()
-        return {"message": f"URL ingérée : {url}", "chunks": len(chunks)}
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    # sauvegarde légère (facultative) : on peut stocker l'URL quelque part si besoin
+    # Démarrer l'ingestion en background et retourner immédiatement
+    asyncio.create_task(_ingest_worker(DATA_DIR, [url]))
+    return {"message": f"Ingestion de l'URL planifiée en arrière-plan : {url}"}
 
 
 @app.get("/api/documents", tags=["Documents"], summary="Lister les fichiers et URLs disponibles")
@@ -158,18 +173,12 @@ def list_documents():
 
 @app.post("/api/documents/ingest", tags=["Documents"], summary="Indexer tous les fichiers du dossier data/")
 async def ingest_documents():
-    """Ingest all files currently in the data directory."""
-    try:
-        chunks = load_and_chunk(data_dir=DATA_DIR)
-        if not chunks:
-            raise HTTPException(400, "Aucun document trouvé dans le dossier data/")
-        rag.vectorstore = store_in_chroma(chunks, path=rag.CHROMA_PATH)
-        rag.refresh_docs()
-        return {"message": f"{len(chunks)} chunks indexés avec succès."}
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(500, str(e))
+    """Démarre l'ingestion de tout le dossier data/ en tâche de fond (non bloquant)."""
+    # quick check existence
+    if not os.path.exists(DATA_DIR) or not os.listdir(DATA_DIR):
+        raise HTTPException(400, "Aucun document trouvé dans le dossier data/")
+    asyncio.create_task(_ingest_worker(DATA_DIR, None))
+    return {"message": "Ingestion démarrée en arrière-plan."}
 
 
 # ---- Search / Chat --------------------------------------------------------
