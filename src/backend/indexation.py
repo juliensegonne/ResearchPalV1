@@ -1,4 +1,5 @@
 import datetime
+import json
 import logging
 import os
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, DirectoryLoader, UnstructuredMarkdownLoader, WebBaseLoader  #chargement des fichiers
@@ -11,9 +12,35 @@ from tqdm import tqdm
 
 logger = logging.getLogger("uvicorn.error")
 
-CHUNK_SIZE = 500
-CHUNK_OVERLAP = 50
-SEPARATORS = ["\n\n", "\n", ". ", " ", ""]  # Ordre de préférence pour le split
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+_DEFAULTS = {
+    "chunk_size": 500,
+    "chunk_overlap": 50,
+    "separators": ["\n\n", "\n", ". ", " ", ""],
+}
+
+_CONFIG_PATH = os.path.join(os.path.dirname(__file__), "indexation_config.json")
+
+
+def _load_config() -> dict:
+    cfg = dict(_DEFAULTS)
+    if os.path.exists(_CONFIG_PATH):
+        try:
+            with open(_CONFIG_PATH) as f:
+                cfg.update(json.load(f))
+            logger.info(f"⚙️ Config indexation chargée depuis {_CONFIG_PATH}")
+        except Exception as e:
+            logger.warning(f"⚠️ Erreur lecture config indexation, défauts utilisés : {e}")
+    return cfg
+
+
+_cfg = _load_config()
+
+CHUNK_SIZE: int = int(_cfg["chunk_size"])
+CHUNK_OVERLAP: int = int(_cfg["chunk_overlap"])
+SEPARATORS: list[str] = _cfg["separators"]
 
 def load_and_chunk(data_dir='data', urls=None):
     documents = []

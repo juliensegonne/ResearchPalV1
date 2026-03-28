@@ -14,7 +14,8 @@ ResearchPalV1/
 │   │   ├── .venv/         # Environnement virtuel Python
 │   │   ├── api.py         # Serveur API REST
 │   │   ├── rag_pipeline.py # Pipeline RAG (retrieval + génération LLM)
-│   │   ├── config.json    # Configuration du pipeline (optionnel)
+│   │   ├── config.json    # Configuration du pipeline RAG (optionnel)
+│   │   ├── indexation_config.json # Configuration de l'indexation (optionnel)
 │   │   ├── generation.py  # Implémentation LLM (Gemini)
 │   │   ├── indexation.py  # Ingestion & indexation (ChromaDB)
 │   │   ├── retrieval.py   # Stratégies de retrieval (cosinus, MMR, reranking, filtrage)
@@ -113,7 +114,8 @@ L'interface sera accessible sur **http://localhost:4200**.
 |---------|------|
 | `api.py` | Serveur FastAPI, endpoints REST |
 | `rag_pipeline.py` | Pipeline RAG : config depuis `config.json`, retrieval (cosinus/MMR/seuil + reranking) et génération (LLM interchangeable) |
-| `config.json` | Configuration du pipeline : stratégie, seuils, modèle d'embeddings, LLM (optionnel, valeurs par défaut intégrées) |
+| `config.json` | Configuration du pipeline RAG : stratégie, seuils, modèle d'embeddings, LLM (optionnel, valeurs par défaut intégrées) |
+| `indexation_config.json` | Configuration de l'indexation : chunk_size, chunk_overlap, séparateurs (optionnel, valeurs par défaut intégrées) |
 | `generation.py` | Implémentation Gemini 2.5 Flash (`gemini_llm`) — interchangeable |
 | `indexation.py` | Chargement de fichiers (PDF/TXT/MD/URL), chunking, stockage ChromaDB |
 | `retrieval.py` | Similarité cosinus, MMR, filtrage par métadonnées, reranking cross-encoder, seuil de score |
