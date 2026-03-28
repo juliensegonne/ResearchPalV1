@@ -11,7 +11,6 @@ ResearchPalV1/
 ├── src/
 │   ├── backend/           # API FastAPI + pipeline RAG (Python)
 │   │   ├── Dockerfile
-│   │   ├── .venv/         # Environnement virtuel Python
 │   │   ├── api.py         # Serveur API REST
 │   │   ├── rag_pipeline.py # Pipeline RAG (retrieval + génération LLM)
 │   │   ├── config.json    # Configuration du pipeline RAG (optionnel)
