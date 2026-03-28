@@ -6,5 +6,6 @@
     "score_threshold": 0.5,
     "embedding_model": "all-mpnet-base-v2",
     "llm": "gemini",
-    "rerank": false
+    "rerank": false,
+    "self_query": false
 }

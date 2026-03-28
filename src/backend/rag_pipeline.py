@@ -21,6 +21,7 @@ _DEFAULTS = {
     "embedding_model": "all-mpnet-base-v2",
     "llm": "gemini",
     "rerank": False,
+    "self_query": False,
 }
 
 _LLM_REGISTRY: dict[str, Callable[[str, str, list[dict]], str]] = {
@@ -68,6 +69,7 @@ EMBEDDING_MODEL: str = _cfg["embedding_model"]
 LLM_FN: Callable[[str, str, list[dict]], str] = _LLM_REGISTRY.get(_cfg["llm"], gemini_llm)
 COMPLETE_FN: Callable[[str], str] = _COMPLETE_REGISTRY.get(_cfg["llm"], gemini_complete)
 RERANK_ENABLED: bool = bool(_cfg["rerank"])
+SELF_QUERY_ENABLED: bool = bool(_cfg["self_query"])
 
 # ---------------------------------------------------------------------------
 # State
@@ -214,15 +216,16 @@ def retrieve(query: str) -> list[str]:
     init_models()
 
     # Self-query: obtain semantic_query and optional metadata_filter
-    try:
-        sq = self_query(query, COMPLETE_FN)
-        semantic_query = sq.get("semantic_query") or query
-        metadata_filter = sq.get("metadata_filter")
-        logger.info(f"self-query -> semantic='{semantic_query}', filter={metadata_filter}")
-    except Exception as e:
-        logger.warning(f"self-query failed, using original query: {e}")
-        semantic_query = query
-        metadata_filter = None
+    semantic_query = query
+    metadata_filter = None
+    if SELF_QUERY_ENABLED:
+        try:
+            sq = self_query(query, COMPLETE_FN)
+            semantic_query = sq.get("semantic_query") or query
+            metadata_filter = sq.get("metadata_filter")
+            logger.info(f"self-query -> semantic='{semantic_query}', filter={metadata_filter}")
+        except Exception as e:
+            logger.warning(f"self-query failed, using original query: {e}")
 
     query_embedding = embedding_model.embed_query(semantic_query)
 
