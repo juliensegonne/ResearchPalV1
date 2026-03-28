@@ -297,3 +297,33 @@ def score_threshold_filter(
     results.sort(key=lambda x: x["score"], reverse=True)
     return results
 
+
+# ---------------------------------------------------------------------------
+# Reciprocal Rank Fusion (RRF)
+# ---------------------------------------------------------------------------
+
+def reciprocal_rank_fusion(
+    ranked_lists: list[list[str]],
+    k_rrf: int = 60,
+) -> list[str]:
+    """
+    Fusionne plusieurs listes ordonnées de documents via Reciprocal Rank Fusion.
+
+    Pour chaque document, on calcule :
+        score = sum( 1 / (k_rrf + rank_i) )  pour chaque liste où il apparaît.
+
+    Paramètres :
+    - ranked_lists : liste de listes de documents (texte), chacune ordonnée
+                     par pertinence décroissante.
+    - k_rrf : constante RRF (défaut 60, valeur standard de la littérature).
+              Plus k_rrf est grand, moins les rangs élevés dominent.
+
+    Retourne la liste fusionnée triée par score RRF décroissant.
+    """
+    scores: dict[str, float] = {}
+    for rlist in ranked_lists:
+        for rank, doc in enumerate(rlist, start=1):
+            scores[doc] = scores.get(doc, 0.0) + 1.0 / (k_rrf + rank)
+
+    return sorted(scores, key=scores.get, reverse=True)
+

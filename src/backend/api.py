@@ -46,7 +46,10 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=[
+        "http://localhost:4200",
+        "http://127.0.0.1:4200",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -108,14 +111,14 @@ async def _ingest_worker(data_dir: str, urls: list | None = None):
     """Worker asynchrone : exécute les fonctions bloquantes dans un thread."""
     try:
         logger.info("Démarrage du worker d'ingestion (background)...")
-        # run blocking load_and_chunk in thread
-        chunks = await asyncio.to_thread(load_and_chunk, data_dir, urls)
+        already_indexed = rag.get_indexed_sources()
+        chunks = await asyncio.to_thread(load_and_chunk, data_dir, urls, already_indexed)
         if not chunks:
             logger.info("Aucun chunk produit par load_and_chunk.")
             return
         # store_in_chroma (bloquant) en thread
         await asyncio.to_thread(store_in_chroma, chunks, rag.CHROMA_PATH)
-        # réinitialiser / rafraîchir l'état du pipeline (si nécessaire, en thread)
+        # réinitialiser / rafraîchir l'état du pipeline
         await asyncio.to_thread(rag.init_models)
         await asyncio.to_thread(rag.refresh_docs)
         logger.info("Ingestion terminée.")
@@ -157,6 +160,7 @@ def list_documents():
             seen_urls: set[str] = set()
             for meta in (data.get("metadatas") or []):
                 source = (meta or {}).get("source", "")
+                logger.info(f"Vérification source pour URL : {source}")
                 if source.startswith(("http://", "https://")) and source not in seen_urls:
                     seen_urls.add(source)
                     items.append({
@@ -186,13 +190,11 @@ async def ingest_documents():
 @app.delete("/api/documents/clear", tags=["Documents"], summary="Vider la base de données vectorielle")
 def clear_database():
     """Delete the ChromaDB database and all uploaded files."""
-    if os.path.exists(rag.CHROMA_PATH):
-        shutil.rmtree(rag.CHROMA_PATH)
+    rag.clear_vectorstore()
     for f in os.listdir(DATA_DIR):
         path = os.path.join(DATA_DIR, f)
         if os.path.isfile(path):
             os.remove(path)
-    rag.reset_state()
     return {"message": "Base de données et fichiers supprimés."}
 
 

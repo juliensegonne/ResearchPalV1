@@ -1,9 +1,8 @@
 """
-query_optimization.py — Optimisation de requête par self-query.
+query_optimization.py — Optimisation de requête.
 
-Utilise Gemini pour décomposer une requête utilisateur en :
-  1. Une requête sémantique épurée (pour la recherche vectorielle)
-  2. Des filtres de métadonnées (pour ChromaDB where clause)
+1. Self-query : décompose une requête utilisateur en requête sémantique + filtres métadonnées.
+2. Multi-query : génère des reformulations pour améliorer le rappel (utilisé avec RRF).
 """
 
 import json
@@ -124,3 +123,68 @@ def _validate_filter_keys(filter_obj: dict) -> None:
                 _validate_filter_keys(value)
         else:
             raise ValueError(f"Clé de filtre inconnue : '{key}'")
+
+
+# ---------------------------------------------------------------------------
+# Multi-query retrieval
+# ---------------------------------------------------------------------------
+
+MULTI_QUERY_PROMPT = """\
+Tu es un expert en recherche documentaire.
+
+Ton rôle : générer des reformulations et synonymes d'une requête utilisateur \
+pour améliorer le rappel d'une recherche vectorielle.
+
+Règles :
+- Génère exactement {n} variantes de la requête, chacune formulée différemment.
+- Chaque variante doit capturer le même sens mais utiliser des termes, \
+synonymes ou angles différents.
+- N'ajoute PAS de critères supplémentaires absents de la requête d'origine.
+- Réponds UNIQUEMENT avec un tableau JSON de chaînes, sans markdown, sans explication.
+
+Exemple :
+Requête : "Comment fonctionne l'attention dans les transformers ?"
+→ ["mécanisme d'attention transformers", \
+"self-attention architecture transformer explication", \
+"rôle de l'attention dans les modèles transformer"]
+
+Requête utilisateur : {query}
+"""
+
+
+def multi_query(
+    query: str,
+    complete_fn: Callable[[str], str],
+    n: int = 3,
+) -> list[str]:
+    """
+    Génère *n* reformulations de la requête via un LLM.
+
+    Retourne une liste de variantes. En cas d'échec, retourne [query].
+    """
+    fallback = [query]
+
+    try:
+        prompt = MULTI_QUERY_PROMPT.format(query=query, n=n)
+        raw = complete_fn(prompt).strip()
+
+        # Nettoyer d'éventuels blocs markdown ```json ... ```
+        if raw.startswith("```"):
+            raw = raw.split("\n", 1)[1]
+            raw = raw.rsplit("```", 1)[0]
+
+        variants = json.loads(raw)
+
+        if not isinstance(variants, list) or not all(isinstance(v, str) for v in variants):
+            logger.warning("⚠️ Query expansion : format invalide, fallback")
+            return fallback
+
+        logger.info(f"🔍 Multi-query : '{query}' → {variants}")
+        return variants
+
+    except json.JSONDecodeError as e:
+        logger.error(f"❌ Query expansion JSON invalide : {e}")
+    except Exception as e:
+        logger.error(f"❌ Query expansion erreur : {e}")
+
+    return fallback

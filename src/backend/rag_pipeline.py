@@ -3,9 +3,9 @@ import logging
 import os
 from typing import Callable
 
-from retrieval import top_k_similar_indices, mmr_from_documents, score_threshold_filter, rerank
+from retrieval import top_k_similar_indices, mmr_from_documents, score_threshold_filter, rerank, reciprocal_rank_fusion
 from generation import gemini_llm, gemini_complete
-from query_optimization import self_query
+from query_optimization import self_query, multi_query
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -22,6 +22,7 @@ _DEFAULTS = {
     "llm": "gemini",
     "rerank": False,
     "self_query": False,
+    "multi_query": False,
 }
 
 _LLM_REGISTRY: dict[str, Callable[[str, str, list[dict]], str]] = {
@@ -70,6 +71,7 @@ LLM_FN: Callable[[str, str, list[dict]], str] = _LLM_REGISTRY.get(_cfg["llm"], g
 COMPLETE_FN: Callable[[str], str] = _COMPLETE_REGISTRY.get(_cfg["llm"], gemini_complete)
 RERANK_ENABLED: bool = bool(_cfg["rerank"])
 SELF_QUERY_ENABLED: bool = bool(_cfg["self_query"])
+MULTI_QUERY_ENABLED: bool = bool(_cfg["multi_query"])
 
 # ---------------------------------------------------------------------------
 # State
@@ -78,6 +80,7 @@ embedding_model = None
 vectorstore = None
 doc_embeddings = None
 documents = None
+doc_metadatas = None
 
 
 def init_models():
@@ -108,25 +111,59 @@ def init_models():
 
 
 def refresh_docs():
-    """Reload embeddings/documents from vectorstore."""
-    global doc_embeddings, documents
+    """Reload embeddings/documents/metadatas from vectorstore."""
+    global doc_embeddings, documents, doc_metadatas
     if vectorstore is not None:
-        data = vectorstore.get(include=["embeddings", "documents"])
+        data = vectorstore.get(include=["embeddings", "documents", "metadatas"])
         doc_embeddings = data["embeddings"]
         documents = data["documents"]
+        doc_metadatas = data["metadatas"]
 
 
-def reset_state():
-    """Reset all RAG state (after clearing the database)."""
-    global vectorstore, doc_embeddings, documents
-    vectorstore = None
+def close_vectorstore():
+    """Ferme le vectorstore pour libérer le verrou SQLite."""
+    global vectorstore
+    if vectorstore is not None:
+        try:
+            del vectorstore
+        except Exception:
+            pass
+        vectorstore = None
+
+
+def clear_vectorstore():
+    """Vide tous les documents du vectorstore via l'API ChromaDB."""
+    global doc_embeddings, documents, doc_metadatas
+    if vectorstore is not None:
+        try:
+            all_ids = vectorstore.get()["ids"]
+            if all_ids:
+                vectorstore.delete(ids=all_ids)
+            logger.info("Vectorstore vidé via l'API ChromaDB.")
+        except Exception as e:
+            logger.exception("Échec du vidage ChromaDB: %s", e)
     doc_embeddings = None
     documents = None
+    doc_metadatas = None
 
 
 def is_ready() -> bool:
     """Return True if the pipeline has documents loaded."""
     return doc_embeddings is not None and len(doc_embeddings) > 0
+
+
+def get_indexed_sources() -> set[str]:
+    """Retourne l'ensemble des sources déjà indexées dans ChromaDB."""
+    if vectorstore is None:
+        return set()
+    try:
+        data = vectorstore.get(include=["metadatas"])
+        return {
+            (meta or {}).get("source", "")
+            for meta in (data.get("metadatas") or [])
+        }
+    except Exception:
+        return set()
 
 
 def doc_count() -> int:
@@ -139,50 +176,43 @@ def _matches_filter(metadata: dict, filter_obj: dict) -> bool:
     if metadata is None or not isinstance(filter_obj, dict):
         return False
 
+    def _check_op(op: str, actual, expected) -> bool:
+        if op == "$eq":
+            return actual == expected
+        if op == "$ne":
+            return actual != expected
+        if op == "$in":
+            return actual in (expected if isinstance(expected, list) else [expected])
+        if op == "$nin":
+            return actual not in (expected if isinstance(expected, list) else [expected])
+        return False
+
     def match(obj, meta):
-        # operators
         if not isinstance(obj, dict):
             return False
         for key, value in obj.items():
+            # Logical operators
             if key == "$and" and isinstance(value, list):
-                return all(match(v, meta) for v in value)
-            if key == "$or" and isinstance(value, list):
-                return any(match(v, meta) for v in value)
-            if key in {"$eq", "$ne", "$in", "$nin"}:
-                # value should be dict with single field: {field: val}
-                if not isinstance(value, dict):
+                if not all(match(v, meta) for v in value):
                     return False
-                for field, expected in value.items():
-                    actual = meta.get(field)
-                    if key == "$eq" and not (actual == expected):
-                        return False
-                    if key == "$ne" and not (actual != expected):
-                        return False
-                    if key == "$in":
-                        if isinstance(expected, list):
-                            if actual not in expected:
-                                return False
-                        else:
-                            if actual != expected:
-                                return False
-                    if key == "$nin":
-                        if isinstance(expected, list):
-                            if actual in expected:
-                                return False
-                        else:
-                            if actual == expected:
-                                return False
-                return True
-            # direct field match like {"doc_type": {"$eq": "pdf"}} or {"doc_type": "pdf"}
-            if key in metadata:
-                # value can be operator dict or direct expected value
+            elif key == "$or" and isinstance(value, list):
+                if not any(match(v, meta) for v in value):
+                    return False
+            # Field-level entry: {"doc_type": "pdf"} or {"doc_type": {"$eq": "pdf"}}
+            elif not key.startswith("$"):
+                actual = meta.get(key)
                 if isinstance(value, dict):
-                    # recurse to handle {"doc_type": {"$eq": "pdf"}}
-                    return match({list(value.keys())[0]: {key: list(value.values())[0]}}, metadata)
+                    # value = {"$eq": "pdf"} or {"$in": ["pdf", "texte"]}
+                    for op, expected in value.items():
+                        if not _check_op(op, actual, expected):
+                            return False
                 else:
-                    return metadata.get(key) == value
-        # fallback false
-        return False
+                    # direct equality: {"doc_type": "pdf"}
+                    if actual != value:
+                        return False
+            else:
+                return False
+        return True
 
     try:
         return match(filter_obj, metadata)
@@ -190,22 +220,13 @@ def _matches_filter(metadata: dict, filter_obj: dict) -> bool:
         return False
 
 
-def _apply_metadata_filter_to_indices(documents_list, filter_obj):
+def _apply_metadata_filter_to_indices(metadatas_list, filter_obj):
     """
-    Return list of indices that match filter_obj.
-    documents_list can be list of dicts (with metadata) or strings (no metadata).
-    We try common metadata placements: doc.get("metadata"), doc itself if dict,
-    or doc.get("source"/"doc_type"/"ingestion_date").
+    Return list of indices whose metadata matches filter_obj.
+    metadatas_list is the list of metadata dicts from ChromaDB.
     """
     matched_indices = []
-    for i, doc in enumerate(documents_list):
-        meta = None
-        if isinstance(doc, dict):
-            meta = doc.get("metadata") or {k: v for k, v in doc.items() if k in {"source", "doc_type", "ingestion_date"}}
-            # if metadata is empty, maybe doc dict is already a metadata-like object
-            if not meta:
-                meta = {k: v for k, v in doc.items() if k not in {"text", "page", "content"}}
-        # strings cannot be filtered
+    for i, meta in enumerate(metadatas_list or []):
         if _matches_filter(meta, filter_obj):
             matched_indices.append(i)
     return matched_indices
@@ -234,7 +255,7 @@ def retrieve(query: str) -> list[str]:
     embeddings_candidates = doc_embeddings
     if metadata_filter and documents:
         try:
-            matched_idx = _apply_metadata_filter_to_indices(documents, metadata_filter)
+            matched_idx = _apply_metadata_filter_to_indices(doc_metadatas, metadata_filter)
             if not matched_idx:
                 logger.info("Aucun document ne correspond au filtre de métadonnées self-query.")
                 return []
@@ -245,25 +266,48 @@ def retrieve(query: str) -> list[str]:
             logger.warning(f"Erreur lors de l'application du filtre metadata: {e}")
             # fallback to full set
 
-    if RETRIEVAL_STRATEGY == "mmr":
-        candidates = mmr_from_documents(
-            documents=doc_candidates,
-            doc_embeddings=embeddings_candidates,
-            query_embedding=query_embedding,
-            k=RETRIEVAL_K,
-            lambda_mult=RETRIEVAL_LAMBDA_MULT,
-        )
-    elif RETRIEVAL_STRATEGY == "threshold":
-        filtered = score_threshold_filter(
-            query_embedding=query_embedding,
-            doc_embeddings=embeddings_candidates,
-            documents=doc_candidates,
-            threshold=SCORE_THRESHOLD,
-        )
-        candidates = [item["text"] for item in filtered]
+    # Build the list of queries: original + expanded variants
+    queries = [semantic_query]
+    if MULTI_QUERY_ENABLED:
+        try:
+            variants = multi_query(semantic_query, COMPLETE_FN)
+            queries.extend(variants)
+            logger.info(f"multi_query: {len(variants)} variantes ajoutées")
+        except Exception as e:
+            logger.warning(f"multi_query failed, using original query only: {e}")
+
+    # Retrieve per query, then fuse with RRF if multiple queries
+    all_ranked_lists: list[list[str]] = []
+    for q in queries:
+        q_emb = query_embedding if q == semantic_query else embedding_model.embed_query(q)
+        if RETRIEVAL_STRATEGY == "mmr":
+            result = mmr_from_documents(
+                documents=doc_candidates,
+                doc_embeddings=embeddings_candidates,
+                query_embedding=q_emb,
+                k=RETRIEVAL_K,
+                lambda_mult=RETRIEVAL_LAMBDA_MULT,
+            )
+        elif RETRIEVAL_STRATEGY == "threshold":
+            filtered = score_threshold_filter(
+                query_embedding=q_emb,
+                doc_embeddings=embeddings_candidates,
+                documents=doc_candidates,
+                threshold=SCORE_THRESHOLD,
+            )
+            result = [item["text"] for item in filtered]
+        else:
+            indices = top_k_similar_indices(q_emb, embeddings_candidates, k=RETRIEVAL_K)
+            result = [doc_candidates[i] for i in indices]
+        all_ranked_lists.append(result)
+
+    # Fuse results
+    if len(all_ranked_lists) == 1:
+        candidates = all_ranked_lists[0]
     else:
-        indices = top_k_similar_indices(query_embedding, embeddings_candidates, k=RETRIEVAL_K)
-        candidates = [doc_candidates[i] for i in indices]
+        fused = reciprocal_rank_fusion(all_ranked_lists)
+        candidates = fused[:RETRIEVAL_K]
+        logger.info(f"RRF fusion: {sum(len(r) for r in all_ranked_lists)} résultats → {len(candidates)} après fusion")
 
     # Reranking cross-encoder
     if RERANK_ENABLED and candidates:

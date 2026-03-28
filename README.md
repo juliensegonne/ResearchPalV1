@@ -17,8 +17,8 @@ ResearchPalV1/
 │   │   ├── indexation_config.json # Configuration de l'indexation (optionnel)
 │   │   ├── generation.py  # Implémentation LLM (Gemini)
 │   │   ├── indexation.py  # Ingestion & indexation (ChromaDB)
-│   │   ├── retrieval.py   # Stratégies de retrieval (cosinus, MMR, reranking, filtrage)
-│   │   ├── query_optimization.py  # Optimisation de requête par self-query (Gemini)
+│   │   ├── retrieval.py   # Stratégies de retrieval (cosinus, MMR, reranking, RRF, filtrage)
+│   │   ├── query_optimization.py  # Optimisation de requête par Self-query et multi-query (Gemini)
 │   │   └── main.py        # Script CLI d'évaluation
 │   └── frontend/          # Interface Angular
 │       ├── Dockerfile
@@ -92,6 +92,10 @@ L'interface sera accessible sur **http://localhost:4200**.
 5. Les réponses incluent les **sources citées** consultables via le bouton dédié.
 6. Utiliser **Vider la base** pour réinitialiser la base vectorielle si nécessaire.
 
+### URL de test
+* https://fr.wikipedia.org/wiki/Art
+* https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
+
 ## Points d'API
 
 | Méthode | Endpoint | Description |
@@ -112,13 +116,13 @@ L'interface sera accessible sur **http://localhost:4200**.
 | Fichier | Rôle |
 |---------|------|
 | `api.py` | Serveur FastAPI, endpoints REST |
-| `rag_pipeline.py` | Pipeline RAG : config depuis `config.json`, retrieval (cosinus/MMR/seuil + reranking) et génération (LLM interchangeable) |
-| `config.json` | Configuration du pipeline RAG : stratégie, seuils, modèle d'embeddings, LLM (optionnel, valeurs par défaut intégrées) |
+| `rag_pipeline.py` | Pipeline RAG : config depuis `config.json`, retrieval (cosinus/MMR/seuil + multi-query/RRF + reranking) et génération (LLM interchangeable) |
+| `config.json` | Configuration du pipeline RAG : stratégie, seuils, modèle d'embeddings, LLM, rerank, self_query, multi_query (optionnel, valeurs par défaut intégrées) |
 | `indexation_config.json` | Configuration de l'indexation : chunk_size, chunk_overlap, séparateurs (optionnel, valeurs par défaut intégrées) |
 | `generation.py` | Implémentation Gemini 2.5 Flash (`gemini_llm`) — interchangeable |
 | `indexation.py` | Chargement de fichiers (PDF/TXT/MD/URL), chunking, stockage ChromaDB |
-| `retrieval.py` | Similarité cosinus, MMR, filtrage par métadonnées, reranking cross-encoder, seuil de score |
-| `query_optimization.py` | Self-query : décomposition requête → requête sémantique + filtres métadonnées via Gemini |
+| `retrieval.py` | Similarité cosinus, MMR, filtrage par métadonnées, reranking cross-encoder, seuil de score, Reciprocal Rank Fusion (RRF) |
+| `query_optimization.py` | Self-query (requête sémantique + filtres métadonnées) et multi-query (reformulations multiples) via Gemini |
 | `main.py` | Script CLI pour évaluation cosinus vs MMR |
 
 ## Lancement avec Docker

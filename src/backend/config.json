@@ -7,5 +7,6 @@
     "embedding_model": "all-mpnet-base-v2",
     "llm": "gemini",
     "rerank": false,
-    "self_query": false
+    "self_query": false,
+    "multi_query": false
 }

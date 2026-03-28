@@ -42,10 +42,26 @@ CHUNK_SIZE: int = int(_cfg["chunk_size"])
 CHUNK_OVERLAP: int = int(_cfg["chunk_overlap"])
 SEPARATORS: list[str] = _cfg["separators"]
 
-def load_and_chunk(data_dir='data', urls=None):
+_DEBUG_DIR = os.path.join(os.path.dirname(__file__), "debug")
+
+
+def _dump_chunks(chunks: list, filename: str, n: int = 3) -> None:
+    """Écrit les *n* premiers chunks dans un fichier texte de debug."""
+    os.makedirs(_DEBUG_DIR, exist_ok=True)
+    path = os.path.join(_DEBUG_DIR, filename)
+    with open(path, "w", encoding="utf-8") as f:
+        for i, chunk in enumerate(chunks[:n]):
+            f.write(f"=== Chunk {i + 1} ===")
+            f.write(f"\nMétadonnées : {chunk.metadata}\n\n")
+            f.write(chunk.page_content)
+            f.write("\n\n")
+    logger.info(f"🔍 Debug : {min(n, len(chunks))} chunks écrits dans {path}")
+
+def load_and_chunk(data_dir='data', urls=None, exclude_sources: set[str] | None = None):
     documents = []
     md_documents = []
     date_ingestion = datetime.datetime.now().strftime("%Y-%m-%d")
+    _excluded = exclude_sources or set()
 
     # 1. Chargement des fichiers locaux
     loaders_config = {
@@ -72,6 +88,12 @@ def load_and_chunk(data_dir='data', urls=None):
         
         batch = loader.load()
         
+        # Filtrer les documents déjà indexés
+        before = len(batch)
+        batch = [d for d in batch if d.metadata.get("source", "") not in _excluded]
+        if before > len(batch):
+            logger.info(f"  ↳ {before - len(batch)} fichier(s) {ext} déjà indexé(s), ignoré(s).")
+
         # On peut aussi ajouter une barre manuelle pour le nettoyage des métadonnées
         for d in tqdm(batch, desc=f"Nettoyage {ext}", leave=False):
             original_source = d.metadata.get("source", "inconnue")
@@ -88,13 +110,19 @@ def load_and_chunk(data_dir='data', urls=None):
     # 2. Chargement des URLs
     url_documents = []
     if urls:
-        logger.info("\nChargement des URLs...")
-        for url in tqdm(urls, desc="Téléchargement Web"):
-            try:
-                loader_web = WebBaseLoader(url)
-                url_documents.extend(loader_web.load())
-            except Exception as e:
-                logger.exception("Erreur sur %s: %s", url, e)
+        # Filtrer les URLs déjà indexées
+        new_urls = [u for u in urls if u not in _excluded]
+        if len(new_urls) < len(urls):
+            logger.info(f"  ↳ {len(urls) - len(new_urls)} URL(s) déjà indexée(s), ignorée(s).")
+
+        if new_urls:
+            logger.info("\nChargement des URLs...")
+            for url in tqdm(new_urls, desc="Téléchargement Web"):
+                try:
+                    loader_web = WebBaseLoader(url)
+                    url_documents.extend(loader_web.load())
+                except Exception as e:
+                    logger.exception("Erreur sur %s: %s", url, e)
 
         for d in url_documents:
             d.metadata = {
@@ -118,7 +146,9 @@ def load_and_chunk(data_dir='data', urls=None):
             chunk_overlap=CHUNK_OVERLAP,
             separators=SEPARATORS
         )
-        chunks.extend(text_splitter.split_documents(documents))
+        text_chunks = text_splitter.split_documents(documents)
+        _dump_chunks(text_chunks, "chunks_texte.txt")
+        chunks.extend(text_chunks)
 
     # Chunking des fichiers Markdown (séparateurs Markdown)
     if md_documents:
@@ -128,7 +158,9 @@ def load_and_chunk(data_dir='data', urls=None):
             chunk_size=CHUNK_SIZE,
             chunk_overlap=CHUNK_OVERLAP,
         )
-        chunks.extend(md_splitter.split_documents(md_documents))
+        md_chunks = md_splitter.split_documents(md_documents)
+        _dump_chunks(md_chunks, "chunks_markdown.txt")
+        chunks.extend(md_chunks)
 
     # Chunking des pages web (séparateurs HTML)
     if url_documents:
@@ -138,10 +170,11 @@ def load_and_chunk(data_dir='data', urls=None):
             chunk_size=CHUNK_SIZE,
             chunk_overlap=CHUNK_OVERLAP,
         )
-        chunks.extend(html_splitter.split_documents(url_documents))
+        html_chunks = html_splitter.split_documents(url_documents)
+        _dump_chunks(html_chunks, "chunks_web.txt")
+        chunks.extend(html_chunks)
 
     logger.info(f"✅ Terminé ! {len(chunks)} chunks créés.")
-    logger.info(f"Exemple de chunk : {chunks[0].page_content}... | Métadonnées : {chunks[0].metadata}")
     
     return chunks
 
