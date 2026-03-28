@@ -1,8 +1,8 @@
 import datetime
 import logging
 import os
-from langchain_community.document_loaders import PyPDFLoader, TextLoader, DirectoryLoader, WebBaseLoader  #chargement des fichiers
-from langchain_text_splitters import RecursiveCharacterTextSplitter  #chunking
+from langchain_community.document_loaders import PyPDFLoader, TextLoader, DirectoryLoader, UnstructuredMarkdownLoader, WebBaseLoader  #chargement des fichiers
+from langchain_text_splitters import RecursiveCharacterTextSplitter, Language  #chunking
 from langchain_chroma import Chroma  #bdd ChromaDB
 from langchain_huggingface import HuggingFaceEmbeddings  #embeddings
 
@@ -17,15 +17,20 @@ SEPARATORS = ["\n\n", "\n", ". ", " ", ""]  # Ordre de préférence pour le spli
 
 def load_and_chunk(data_dir='data', urls=None):
     documents = []
+    md_documents = []
     date_ingestion = datetime.datetime.now().strftime("%Y-%m-%d")
 
     # 1. Chargement des fichiers locaux
     loaders_config = {
         ".pdf": PyPDFLoader,
         ".txt": TextLoader,
-        ".md": TextLoader,
+        ".md": UnstructuredMarkdownLoader,
     }
     
+    loader_kwargs = {
+        ".md": {"mode": "elements"},
+    }
+
     logger.info("Chargement des fichiers locaux...")
     for ext, loader_cls in loaders_config.items():
         # Utilisation de show_progress=True (supporté par DirectoryLoader si tqdm est installé)
@@ -34,7 +39,8 @@ def load_and_chunk(data_dir='data', urls=None):
             glob=f"**/*{ext}", 
             loader_cls=loader_cls,
             silent_errors=True,
-            show_progress=True # LangChain affichera une barre interne
+            show_progress=True,
+            loader_kwargs=loader_kwargs.get(ext, {}),
         )
         
         batch = loader.load()
@@ -44,36 +50,69 @@ def load_and_chunk(data_dir='data', urls=None):
             original_source = d.metadata.get("source", "inconnue")
             d.metadata = {
                 "source": original_source,
-                "doc_type": "pdf" if ext == ".pdf" else "document_texte",
+                "doc_type": {  ".pdf": "pdf", ".txt": "texte", ".md": "markdown" }[ext],
                 "ingestion_date": date_ingestion
             }
-        documents.extend(batch)
+        if ext == ".md":
+            md_documents.extend(batch)
+        else:
+            documents.extend(batch)
 
     # 2. Chargement des URLs
+    url_documents = []
     if urls:
         logger.info("\nChargement des URLs...")
-        # On charge les URLs une par une pour voir la progression
         for url in tqdm(urls, desc="Téléchargement Web"):
             try:
                 loader_web = WebBaseLoader(url)
-                documents.extend(loader_web.load())
+                url_documents.extend(loader_web.load())
             except Exception as e:
                 logger.exception("Erreur sur %s: %s", url, e)
 
+        for d in url_documents:
+            d.metadata = {
+                "source": d.metadata.get("source", "inconnue"),
+                "doc_type": "web",
+                "ingestion_date": date_ingestion
+            }
+
     # 3. Le Chunking
-    if not documents:
+    if not documents and not md_documents and not url_documents:
         logger.warning("Aucun document trouvé.")
         return []
 
-    logger.info(f"\nDécoupage de {len(documents)} documents en chunks...")
-    text_splitter = RecursiveCharacterTextSplitter(
-        chunk_size=CHUNK_SIZE,
-        chunk_overlap=CHUNK_OVERLAP,
-        separators=SEPARATORS
-    )
+    chunks = []
 
-    # Le split est généralement très rapide, mais voici comment voir l'avancée
-    chunks = text_splitter.split_documents(documents)
+    # Chunking des fichiers locaux PDF/TXT (séparateurs texte)
+    if documents:
+        logger.info(f"\nDécoupage de {len(documents)} documents texte en chunks...")
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=CHUNK_SIZE,
+            chunk_overlap=CHUNK_OVERLAP,
+            separators=SEPARATORS
+        )
+        chunks.extend(text_splitter.split_documents(documents))
+
+    # Chunking des fichiers Markdown (séparateurs Markdown)
+    if md_documents:
+        logger.info(f"\nDécoupage de {len(md_documents)} documents Markdown en chunks...")
+        md_splitter = RecursiveCharacterTextSplitter.from_language(
+            Language.MARKDOWN,
+            chunk_size=CHUNK_SIZE,
+            chunk_overlap=CHUNK_OVERLAP,
+        )
+        chunks.extend(md_splitter.split_documents(md_documents))
+
+    # Chunking des pages web (séparateurs HTML)
+    if url_documents:
+        logger.info(f"\nDécoupage de {len(url_documents)} pages web en chunks...")
+        html_splitter = RecursiveCharacterTextSplitter.from_language(
+            Language.HTML,
+            chunk_size=CHUNK_SIZE,
+            chunk_overlap=CHUNK_OVERLAP,
+        )
+        chunks.extend(html_splitter.split_documents(url_documents))
+
     logger.info(f"✅ Terminé ! {len(chunks)} chunks créés.")
     logger.info(f"Exemple de chunk : {chunks[0].page_content}... | Métadonnées : {chunks[0].metadata}")
     
