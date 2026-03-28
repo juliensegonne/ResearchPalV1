@@ -111,8 +111,7 @@ async def _ingest_worker(data_dir: str, urls: list | None = None):
     """Worker asynchrone : exécute les fonctions bloquantes dans un thread."""
     try:
         logger.info("Démarrage du worker d'ingestion (background)...")
-        already_indexed = rag.get_indexed_sources()
-        chunks = await asyncio.to_thread(load_and_chunk, data_dir, urls, already_indexed)
+        chunks = await asyncio.to_thread(load_and_chunk, data_dir, urls)
         if not chunks:
             logger.info("Aucun chunk produit par load_and_chunk.")
             return

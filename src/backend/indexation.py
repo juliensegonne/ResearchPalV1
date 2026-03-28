@@ -2,8 +2,8 @@ import datetime
 import json
 import logging
 import os
-from langchain_community.document_loaders import PyPDFLoader, TextLoader, DirectoryLoader, UnstructuredMarkdownLoader, WebBaseLoader  #chargement des fichiers
-from langchain_text_splitters import RecursiveCharacterTextSplitter, Language  #chunking
+from langchain_community.document_loaders import PyPDFLoader, TextLoader, DirectoryLoader, WebBaseLoader  #chargement des fichiers
+from langchain_text_splitters import Language, RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter  #chunking
 from langchain_chroma import Chroma  #bdd ChromaDB
 from langchain_huggingface import HuggingFaceEmbeddings  #embeddings
 
@@ -45,7 +45,7 @@ SEPARATORS: list[str] = _cfg["separators"]
 _DEBUG_DIR = os.path.join(os.path.dirname(__file__), "debug")
 
 
-def _dump_chunks(chunks: list, filename: str, n: int = 3) -> None:
+def _dump_chunks(chunks: list, filename: str, n: int = 50) -> None:
     """Écrit les *n* premiers chunks dans un fichier texte de debug."""
     os.makedirs(_DEBUG_DIR, exist_ok=True)
     path = os.path.join(_DEBUG_DIR, filename)
@@ -57,17 +57,16 @@ def _dump_chunks(chunks: list, filename: str, n: int = 3) -> None:
             f.write("\n\n")
     logger.info(f"🔍 Debug : {min(n, len(chunks))} chunks écrits dans {path}")
 
-def load_and_chunk(data_dir='data', urls=None, exclude_sources: set[str] | None = None):
+def load_and_chunk(data_dir='data', urls=None):
     documents = []
     md_documents = []
     date_ingestion = datetime.datetime.now().strftime("%Y-%m-%d")
-    _excluded = exclude_sources or set()
 
     # 1. Chargement des fichiers locaux
     loaders_config = {
         ".pdf": PyPDFLoader,
         ".txt": TextLoader,
-        ".md": UnstructuredMarkdownLoader,
+        ".md": TextLoader,
     }
     
     loader_kwargs = {
@@ -83,16 +82,10 @@ def load_and_chunk(data_dir='data', urls=None, exclude_sources: set[str] | None 
             loader_cls=loader_cls,
             silent_errors=True,
             show_progress=True,
-            loader_kwargs=loader_kwargs.get(ext, {}),
+            #loader_kwargs=loader_kwargs.get(ext, {}),
         )
         
         batch = loader.load()
-        
-        # Filtrer les documents déjà indexés
-        before = len(batch)
-        batch = [d for d in batch if d.metadata.get("source", "") not in _excluded]
-        if before > len(batch):
-            logger.info(f"  ↳ {before - len(batch)} fichier(s) {ext} déjà indexé(s), ignoré(s).")
 
         # On peut aussi ajouter une barre manuelle pour le nettoyage des métadonnées
         for d in tqdm(batch, desc=f"Nettoyage {ext}", leave=False):
@@ -110,19 +103,13 @@ def load_and_chunk(data_dir='data', urls=None, exclude_sources: set[str] | None 
     # 2. Chargement des URLs
     url_documents = []
     if urls:
-        # Filtrer les URLs déjà indexées
-        new_urls = [u for u in urls if u not in _excluded]
-        if len(new_urls) < len(urls):
-            logger.info(f"  ↳ {len(urls) - len(new_urls)} URL(s) déjà indexée(s), ignorée(s).")
-
-        if new_urls:
-            logger.info("\nChargement des URLs...")
-            for url in tqdm(new_urls, desc="Téléchargement Web"):
-                try:
-                    loader_web = WebBaseLoader(url)
-                    url_documents.extend(loader_web.load())
-                except Exception as e:
-                    logger.exception("Erreur sur %s: %s", url, e)
+        logger.info("\nChargement des URLs...")
+        for url in tqdm(urls, desc="Téléchargement Web"):
+            try:
+                loader_web = WebBaseLoader(url)
+                url_documents.extend(loader_web.load())
+            except Exception as e:
+                logger.exception("Erreur sur %s: %s", url, e)
 
         for d in url_documents:
             d.metadata = {
@@ -150,15 +137,33 @@ def load_and_chunk(data_dir='data', urls=None, exclude_sources: set[str] | None 
         _dump_chunks(text_chunks, "chunks_texte.txt")
         chunks.extend(text_chunks)
 
-    # Chunking des fichiers Markdown (séparateurs Markdown)
+    # Chunking des fichiers Markdown (par headers)
     if md_documents:
         logger.info(f"\nDécoupage de {len(md_documents)} documents Markdown en chunks...")
-        md_splitter = RecursiveCharacterTextSplitter.from_language(
-            Language.MARKDOWN,
-            chunk_size=CHUNK_SIZE,
-            chunk_overlap=CHUNK_OVERLAP,
+        headers_to_split_on = [
+            ("#", "header_1"),
+            ("##", "header_2"),
+            ("###", "header_3"),
+        ]
+        md_header_splitter = MarkdownHeaderTextSplitter(
+            headers_to_split_on=headers_to_split_on,
+            strip_headers=False,
         )
-        md_chunks = md_splitter.split_documents(md_documents)
+        # # Second pass : redécouper les sections trop longues
+        # md_text_splitter = RecursiveCharacterTextSplitter(
+        #     chunk_size=CHUNK_SIZE,
+        #     chunk_overlap=CHUNK_OVERLAP,
+        # )
+        md_chunks = []
+        for doc in md_documents:
+            header_splits = md_header_splitter.split_text(doc.page_content)
+            # sub_chunks = md_text_splitter.split_documents(header_splits)
+            # for chunk in sub_chunks:
+            #     # Fusionner metadata du document original + headers extraits
+            #     chunk.metadata = {**doc.metadata, **chunk.metadata}
+            for chunk in header_splits:
+                chunk.metadata = {**doc.metadata, **chunk.metadata}
+            md_chunks.extend(header_splits)
         _dump_chunks(md_chunks, "chunks_markdown.txt")
         chunks.extend(md_chunks)
 
