@@ -1,10 +1,10 @@
-import json
 import logging
 import os
 from typing import Callable
 
+from utils import load_config
 from retrieval import top_k_similar_indices, mmr_from_documents, score_threshold_filter, rerank, reciprocal_rank_fusion
-from generation import gemini_llm, gemini_complete
+from generation import get_llm_functions
 from query_optimization import self_query, multi_query
 
 logger = logging.getLogger("uvicorn.error")
@@ -25,34 +25,9 @@ _DEFAULTS = {
     "multi_query": False,
 }
 
-_LLM_REGISTRY: dict[str, Callable[[str, str, list[dict]], str]] = {
-    "gemini": gemini_llm,
-}
-
-_COMPLETE_REGISTRY: dict[str, Callable[[str], str]] = {
-    "gemini": gemini_complete,
-}
-
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "config.json")
 
-
-def _load_config() -> dict:
-    """Load config from config.json, falling back to defaults."""
-    cfg = dict(_DEFAULTS)
-    if os.path.exists(_CONFIG_PATH):
-        try:
-            with open(_CONFIG_PATH) as f:
-                user_cfg = json.load(f)
-            cfg.update(user_cfg)
-            logger.info(f"⚙️ Configuration chargée depuis {_CONFIG_PATH}")
-        except Exception as e:
-            logger.warning(f"⚠️ Erreur lecture config, valeurs par défaut utilisées : {e}")
-    else:
-        logger.info("⚙️ Aucun config.json trouvé, valeurs par défaut utilisées")
-    return cfg
-
-
-_cfg = _load_config()
+_cfg = load_config(_DEFAULTS, _CONFIG_PATH)
 
 # Résoudre CHROMA_PATH en chemin absolu (module-relative si nécessaire)
 _base_dir = os.path.dirname(__file__)
@@ -67,11 +42,10 @@ RETRIEVAL_K: int = int(_cfg["retrieval_k"])
 RETRIEVAL_LAMBDA_MULT: float = float(_cfg["retrieval_lambda_mult"])
 SCORE_THRESHOLD: float = float(_cfg["score_threshold"])
 EMBEDDING_MODEL: str = _cfg["embedding_model"]
-LLM_FN: Callable[[str, str, list[dict]], str] = _LLM_REGISTRY.get(_cfg["llm"], gemini_llm)
-COMPLETE_FN: Callable[[str], str] = _COMPLETE_REGISTRY.get(_cfg["llm"], gemini_complete)
 RERANK_ENABLED: bool = bool(_cfg["rerank"])
 SELF_QUERY_ENABLED: bool = bool(_cfg["self_query"])
 MULTI_QUERY_ENABLED: bool = bool(_cfg["multi_query"])
+LLM_FN, COMPLETE_FN = get_llm_functions(_cfg["llm"])
 
 # ---------------------------------------------------------------------------
 # State

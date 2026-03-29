@@ -127,13 +127,18 @@ async def _ingest_worker(data_dir: str, urls: list | None = None):
 
 @app.post("/api/documents/add-url", tags=["Documents"], summary="Ingérer une page web par URL")
 async def add_url(url: str = Form(...)):
-    """Enregistre l'URL puis démarre l'ingestion en tâche de fond."""
+    """Ingest a web page by URL."""
     if not url.startswith(("http://", "https://")):
         raise HTTPException(400, "URL invalide")
-    # sauvegarde légère (facultative) : on peut stocker l'URL quelque part si besoin
-    # Démarrer l'ingestion en background et retourner immédiatement
-    asyncio.create_task(_ingest_worker(DATA_DIR, [url]))
-    return {"message": f"Ingestion de l'URL planifiée en arrière-plan : {url}"}
+    try:
+        chunks = load_and_chunk(data_dir=DATA_DIR, urls=[url])
+        if chunks:
+            store_in_chroma(chunks, path=rag.CHROMA_PATH)
+            rag.init_models()
+            rag.refresh_docs()
+        return {"message": f"URL ingérée : {url}", "chunks": len(chunks)}
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 
 @app.get("/api/documents", tags=["Documents"], summary="Lister les fichiers et URLs disponibles")
@@ -176,12 +181,18 @@ def list_documents():
 
 @app.post("/api/documents/ingest", tags=["Documents"], summary="Indexer tous les fichiers du dossier data/")
 async def ingest_documents():
-    """Démarre l'ingestion de tout le dossier data/ en tâche de fond (non bloquant)."""
-    # quick check existence
-    if not os.path.exists(DATA_DIR) or not os.listdir(DATA_DIR):
-        raise HTTPException(400, "Aucun document trouvé dans le dossier data/")
-    asyncio.create_task(_ingest_worker(DATA_DIR, None))
-    return {"message": "Ingestion démarrée en arrière-plan."}
+    """Ingest all files currently in the data directory."""
+    try:
+        chunks = load_and_chunk(data_dir=DATA_DIR)
+        if not chunks:
+            raise HTTPException(400, "Aucun document trouvé dans le dossier data/")
+        rag.vectorstore = store_in_chroma(chunks, path=rag.CHROMA_PATH)
+        rag.refresh_docs()
+        return {"message": f"{len(chunks)} chunks indexés avec succès."}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 
 # ---- Search / Chat --------------------------------------------------------

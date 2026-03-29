@@ -4,7 +4,7 @@
     "retrieval_k": 5,
     "retrieval_lambda_mult": 0.5,
     "score_threshold": 0.5,
-    "embedding_model": "all-mpnet-base-v2",
+    "embedding_model": "Qwen/Qwen3-Embedding-0.6B",
     "llm": "gemini",
     "rerank": false,
     "self_query": false,

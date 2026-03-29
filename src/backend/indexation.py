@@ -1,14 +1,13 @@
 import datetime
-import json
 import logging
 import os
 from langchain_community.document_loaders import PyPDFLoader, TextLoader, DirectoryLoader, WebBaseLoader  #chargement des fichiers
 from langchain_text_splitters import Language, RecursiveCharacterTextSplitter, MarkdownHeaderTextSplitter  #chunking
 from langchain_chroma import Chroma  #bdd ChromaDB
 from langchain_huggingface import HuggingFaceEmbeddings  #embeddings
-
-
 from tqdm import tqdm
+
+from utils import load_config
 
 logger = logging.getLogger("uvicorn.error")
 
@@ -19,28 +18,17 @@ _DEFAULTS = {
     "chunk_size": 500,
     "chunk_overlap": 50,
     "separators": ["\n\n", "\n", ". ", " ", ""],
+    "embedding_model": "all-mpnet-base-v2",
 }
 
 _CONFIG_PATH = os.path.join(os.path.dirname(__file__), "indexation_config.json")
 
-
-def _load_config() -> dict:
-    cfg = dict(_DEFAULTS)
-    if os.path.exists(_CONFIG_PATH):
-        try:
-            with open(_CONFIG_PATH) as f:
-                cfg.update(json.load(f))
-            logger.info(f"⚙️ Config indexation chargée depuis {_CONFIG_PATH}")
-        except Exception as e:
-            logger.warning(f"⚠️ Erreur lecture config indexation, défauts utilisés : {e}")
-    return cfg
-
-
-_cfg = _load_config()
+_cfg = load_config(_DEFAULTS, _CONFIG_PATH)
 
 CHUNK_SIZE: int = int(_cfg["chunk_size"])
 CHUNK_OVERLAP: int = int(_cfg["chunk_overlap"])
 SEPARATORS: list[str] = _cfg["separators"]
+EMBEDDING_MODEL: str = _cfg["embedding_model"]
 
 _DEBUG_DIR = os.path.join(os.path.dirname(__file__), "debug")
 
@@ -197,7 +185,7 @@ def store_in_chroma(chunks, path="./chroma_db"):
     Prend une liste de chunks et les stocke dans une base ChromaDB.
     """
     # On définit le modèle d'embedding
-    embeddings = HuggingFaceEmbeddings(model_name="all-mpnet-base-v2")
+    embeddings = HuggingFaceEmbeddings(model_name=EMBEDDING_MODEL)
     
     # Création et persistance de la base
     vectorstore = Chroma.from_documents(
@@ -208,6 +196,3 @@ def store_in_chroma(chunks, path="./chroma_db"):
     
     logger.info(f"{len(chunks)} chunks ont été indexés avec succès dans {path}")
     return vectorstore
-
-#chunks = load_and_chunk(data_dir='data', urls=["https://fr.wikipedia.org/wiki/Masashi_Kishimoto"]) 
-#store_in_chroma(chunks, path="./chroma_db") 

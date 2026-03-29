@@ -28,6 +28,7 @@ METADATA_SCHEMA = {
 }
 
 SELF_QUERY_PROMPT = """\
+<instructions>
 Tu es un analyseur de requêtes pour un moteur de recherche documentaire.
 
 Ton rôle : décomposer la requête utilisateur en deux parties :
@@ -54,8 +55,11 @@ Exemples :
 
 - Requête : "Comment fonctionne l'attention dans les transformers ?"
   → {{"semantic_query": "fonctionnement attention transformers", "metadata_filter": null}}
+</instructions>
 
-Requête utilisateur : {query}
+<requête_utilisateur>
+{query}
+</requête_utilisateur>
 """
 
 
@@ -130,6 +134,7 @@ def _validate_filter_keys(filter_obj: dict) -> None:
 # ---------------------------------------------------------------------------
 
 MULTI_QUERY_PROMPT = """\
+<instructions>
 Tu es un expert en recherche documentaire.
 
 Ton rôle : générer des reformulations et synonymes d'une requête utilisateur \
@@ -147,8 +152,11 @@ Requête : "Comment fonctionne l'attention dans les transformers ?"
 → ["mécanisme d'attention transformers", \
 "self-attention architecture transformer explication", \
 "rôle de l'attention dans les modèles transformer"]
+</instructions>
 
-Requête utilisateur : {query}
+<requête_utilisateur>
+{query}
+</requête_utilisateur>
 """
 
 
@@ -176,15 +184,15 @@ def multi_query(
         variants = json.loads(raw)
 
         if not isinstance(variants, list) or not all(isinstance(v, str) for v in variants):
-            logger.warning("⚠️ Query expansion : format invalide, fallback")
+            logger.warning("⚠️ Multi Query : format invalide, fallback")
             return fallback
 
         logger.info(f"🔍 Multi-query : '{query}' → {variants}")
         return variants
 
     except json.JSONDecodeError as e:
-        logger.error(f"❌ Query expansion JSON invalide : {e}")
+        logger.error(f"❌ Multi Query JSON invalide : {e}")
     except Exception as e:
-        logger.error(f"❌ Query expansion erreur : {e}")
+        logger.error(f"❌ Multi Query erreur : {e}")
 
     return fallback
