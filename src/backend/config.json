@@ -8,5 +8,5 @@
     "llm": "gemini",
     "rerank": false,
     "self_query": false,
-    "multi_query": false
+    "multi_query": true
 }
