@@ -47,8 +47,6 @@ ResearchPalV1/
 ### 1. Backend (API Python)
 
 ```bash
-cd src/backend
-
 # Créer et activer l'environnement virtuel
 python3 -m venv .venv
 source .venv/bin/activate        # Linux/macOS
@@ -58,6 +56,7 @@ source .venv/bin/activate        # Linux/macOS
 pip install -r requirements.txt
 
 # Configurer la clé API Gemini
+cd src/backend
 export GEMINI_API_KEY="votre-clé-gemini"
 
 # Lancer le serveur

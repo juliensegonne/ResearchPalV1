@@ -1,7 +1,7 @@
 __pycache__/
 *.py[cod]
 *.egg-info/
-# chroma_db/
+chroma_db/
 .env
 .venv/
 data/
