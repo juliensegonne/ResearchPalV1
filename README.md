@@ -6,11 +6,9 @@
 
 ```
 ResearchPalV1/
-├── docker-compose.yml     # Orchestration Docker
 ├── data/                  # Corpus de documents (PDF, TXT, MD)
 ├── src/
 │   ├── backend/           # API FastAPI + pipeline RAG (Python)
-│   │   ├── Dockerfile
 │   │   ├── api.py         # Serveur API REST
 │   │   ├── rag_pipeline.py # Pipeline RAG (retrieval + génération LLM)
 │   │   ├── config.json    # Configuration du pipeline RAG (optionnel)
@@ -19,9 +17,8 @@ ResearchPalV1/
 │   │   ├── indexation.py  # Ingestion & indexation (ChromaDB)
 │   │   ├── retrieval.py   # Stratégies de retrieval (cosinus, MMR, reranking, RRF, filtrage)
 │   │   ├── query_optimization.py  # Optimisation de requête par Self-query et multi-query (Gemini)
-│   │   └── main.py        # Script CLI d'évaluation
+|   |   └── utils.py       # Fonctions utilitaires communes
 │   └── frontend/          # Interface Angular
-│       ├── Dockerfile
 │       ├── nginx.conf     # Reverse proxy pour Docker
 │       └── src/app/
 │           ├── chat/       # Composant de chat conversationnel
@@ -34,11 +31,11 @@ ResearchPalV1/
 | Composant | Technologie |
 |-----------|-------------|
 | LLM | Gemini 2.5 Flash (Google) |
-| Embeddings | Sentence Transformers (`all-mpnet-base-v2`) |
+| Embeddings | Sentence Transformers (`Qwen/Qwen3-Embedding-0.6B`) |
 | Base vectorielle | ChromaDB |
 | Backend | FastAPI + Uvicorn |
 | Frontend | Angular 21 |
-| Reranking | Cross-encoder (`ms-marco-MiniLM-L-6-v2`) |
+<!-- | Reranking | Cross-encoder (`ms-marco-MiniLM-L-6-v2`) | -->
 
 ## Prérequis
 
@@ -92,10 +89,6 @@ L'interface sera accessible sur **http://localhost:4200**.
 5. Les réponses incluent les **sources citées** consultables via le bouton dédié.
 6. Utiliser **Vider la base** pour réinitialiser la base vectorielle si nécessaire.
 
-### URL de test
-* https://fr.wikipedia.org/wiki/Art
-* https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents
-
 ## Points d'API
 
 | Méthode | Endpoint | Description |
@@ -123,42 +116,4 @@ L'interface sera accessible sur **http://localhost:4200**.
 | `indexation.py` | Chargement de fichiers (PDF/TXT/MD/URL), chunking, stockage ChromaDB |
 | `retrieval.py` | Similarité cosinus, MMR, filtrage par métadonnées, reranking cross-encoder, seuil de score, Reciprocal Rank Fusion (RRF) |
 | `query_optimization.py` | Self-query (requête sémantique + filtres métadonnées) et multi-query (reformulations multiples) via Gemini |
-| `main.py` | Script CLI pour évaluation cosinus vs MMR |
-
-## Lancement avec Docker
-
-### Prérequis
-
-- **Docker** et **Docker Compose** installés
-- Une **clé API Gemini** valide
-
-### Lancement
-
-```bash
-# Configurer la clé API
-export GEMINI_API_KEY="votre-clé-gemini"
-
-# Construire et lancer les conteneurs
-docker compose up --build
-```
-
-L'application sera accessible sur **http://localhost:4200**.
-
-### Architecture Docker
-
-| Service | Image | Port | Détails |
-|---------|-------|------|---------|
-| `backend` | Python 3.12 + FastAPI | 8000 | API REST, pipeline RAG |
-| `frontend` | Node 22 (build) → Nginx (serve) | 4200 → 80 | SPA Angular, reverse proxy `/api/` → backend |
-
-- Le frontend Nginx redirige les appels `/api/` vers le backend.
-- Les données ChromaDB et les fichiers uploadés sont persistés via des volumes Docker.
-- En production (Docker), l'API est accédée via le proxy Nginx (`/api`), ce qui évite les problèmes CORS.
-
-### Arrêt
-
-```bash
-docker compose down
-# Pour supprimer aussi les volumes (données persistantes) :
-docker compose down -v
-```
+| `utils.py` | Fonctions utilitaires communes |
