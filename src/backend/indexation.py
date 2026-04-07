@@ -6,10 +6,12 @@ from langchain_text_splitters import Language, RecursiveCharacterTextSplitter, M
 from langchain_chroma import Chroma  #bdd ChromaDB
 from langchain_huggingface import HuggingFaceEmbeddings  #embeddings
 from tqdm import tqdm
+import re
 
 from utils import load_config
 
 logger = logging.getLogger("uvicorn.error")
+
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -62,31 +64,32 @@ def load_and_chunk(data_dir='data', urls=None):
     }
 
     logger.info("Chargement des fichiers locaux...")
-    for ext, loader_cls in loaders_config.items():
-        # Utilisation de show_progress=True (supporté par DirectoryLoader si tqdm est installé)
-        loader = DirectoryLoader(
-            data_dir, 
-            glob=f"**/*{ext}", 
-            loader_cls=loader_cls,
-            silent_errors=True,
-            show_progress=True,
-            #loader_kwargs=loader_kwargs.get(ext, {}),
-        )
-        
-        batch = loader.load()
+    if data_dir:
+        for ext, loader_cls in loaders_config.items():
+            # Utilisation de show_progress=True (supporté par DirectoryLoader si tqdm est installé)
+            loader = DirectoryLoader(
+                data_dir, 
+                glob=f"**/*{ext}", 
+                loader_cls=loader_cls,
+                silent_errors=True,
+                show_progress=True,
+                #loader_kwargs=loader_kwargs.get(ext, {}),
+            )
+            
+            batch = loader.load()
 
-        # On peut aussi ajouter une barre manuelle pour le nettoyage des métadonnées
-        for d in tqdm(batch, desc=f"Nettoyage {ext}", leave=False):
-            original_source = d.metadata.get("source", "inconnue")
-            d.metadata = {
-                "source": original_source,
-                "doc_type": {  ".pdf": "pdf", ".txt": "texte", ".md": "markdown" }[ext],
-                "ingestion_date": date_ingestion
-            }
-        if ext == ".md":
-            md_documents.extend(batch)
-        else:
-            documents.extend(batch)
+            # On peut aussi ajouter une barre manuelle pour le nettoyage des métadonnées
+            for d in tqdm(batch, desc=f"Nettoyage {ext}", leave=False):
+                original_source = d.metadata.get("source", "inconnue")
+                d.metadata = {
+                    "source": original_source,
+                    "doc_type": {  ".pdf": "pdf", ".txt": "texte", ".md": "markdown" }[ext],
+                    "ingestion_date": date_ingestion
+                }
+            if ext == ".md":
+                md_documents.extend(batch)
+            else:
+                documents.extend(batch)
 
     # 2. Chargement des URLs
     url_documents = []
@@ -95,7 +98,23 @@ def load_and_chunk(data_dir='data', urls=None):
         for url in tqdm(urls, desc="Téléchargement Web"):
             try:
                 loader_web = WebBaseLoader(url)
-                url_documents.extend(loader_web.load())
+                docs = loader_web.load()
+                
+                # Nettoyage du contenu de chaque document récupéré
+                for doc in docs:
+                    text = doc.page_content
+                    try:
+                        text = text.encode('latin-1').decode('utf-8')
+                    except (UnicodeEncodeError, UnicodeDecodeError):
+                        # Si la conversion échoue, c'est que le texte était déjà correctement encodé
+                        pass
+                    # 1. Remplace les espaces/tabulations multiples par un seul espace
+                    text = re.sub(r'[ \t]+', ' ', text)
+                    # 2. Réduit les suites de 3 sauts de ligne (ou plus) à 2 sauts de ligne (pour garder les paragraphes)
+                    text = re.sub(r'\n\s*\n', '\n\n', text)
+                
+                    doc.page_content = text.strip()
+                url_documents.extend(docs)
             except Exception as e:
                 logger.exception("Erreur sur %s: %s", url, e)
 
